@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+dist/
+*.pyz
+*.db
+*.log
+*.lock
+webull.toml
+webull-token/
+STOP
