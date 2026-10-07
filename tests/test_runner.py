@@ -443,7 +443,17 @@ class Build(unittest.TestCase):
                                capture_output=True, text=True, cwd=d, timeout=60)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("[ACCEPT] entry KO", r.stdout)
-            self.assertIn("runner 0.1.0", r.stdout)
+            self.assertIn("runner 0.1.1", r.stdout)
+            res = json.loads([ln for ln in r.stdout.splitlines() if ln.startswith("[RESULT] ")][0][9:])
+            self.assertGreater(res["trades"], 0)
+            r0 = subprocess.run([sys.executable, out, "simulate", "--bars", os.path.join(d, "b.json"),
+                                 "--inputs", '{"stop_atr": 0, "target_atr": 0}'],
+                                capture_output=True, text=True, cwd=d, timeout=60)
+            self.assertEqual(r0.returncode, 0, r0.stderr)
+            self.assertNotIn('"target": ', r0.stdout)
+            bad = subprocess.run([sys.executable, out, "simulate", "--bars", os.path.join(d, "b.json"),
+                                  "--inputs", '{"nope": 1}'], capture_output=True, text=True, cwd=d, timeout=60)
+            self.assertEqual(bad.returncode, 2)
 
 
 if __name__ == "__main__":

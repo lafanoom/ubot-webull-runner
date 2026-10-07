@@ -57,7 +57,7 @@ token, a plain file - keep it private too), `<name>.lock` (one copy per folder).
 ## For developers
 
     python -m unittest discover tests
-    python -m ubot_runner examples/UBotExample.py simulate --bars bars.json
+    python -m ubot_runner examples/UBotExample.py simulate --bars bars.json --inputs '{"fast": 10}'
     python tools/build_pyz.py examples/UBotExample.py "dist/Example Trend v1.00.pyz"
 
 A bytecode `.pyz` runs only on the Python minor version that built it, and says so.
@@ -66,7 +66,8 @@ A bytecode `.pyz` runs only on the Python minor version that built it, and says 
 Simulation runs the same engine against an in-memory broker: market orders fill at
 the next bar's open, a stop touched inside a bar fills at the stop (or the open on a
 gap) before any target in the same bar. It is an estimate - no spread, no slippage
-beyond gaps, no partial fills.
+beyond gaps, no partial fills. The last line is `[RESULT] {json}`; strategy evidence
+lines are `[ACCEPT] ...` and appear only in a simulation.
 
 ## License
 

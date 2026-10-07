@@ -84,6 +84,7 @@ def main(strategy_cls, program_path, argv=None):
     ap.add_argument("--fetch", type=int, help="simulate: fetch this many bars per symbol from Webull")
     ap.add_argument("--save-bars", help="simulate --fetch: also save the bars to this file")
     ap.add_argument("--deposit", type=float, default=10_000.0)
+    ap.add_argument("--inputs", help='simulate --bars: input values as JSON, e.g. {"fast": 10}')
     args = ap.parse_args(argv)
 
     strategy = strategy_cls()
@@ -94,9 +95,16 @@ def main(strategy_cls, program_path, argv=None):
 
     if args.command == "simulate" and args.bars:
         from .sim import load_bars, simulate
+        import json
+        from .config import merge_inputs
+        try:
+            inputs = merge_inputs(strategy.INPUTS, json.loads(args.inputs) if args.inputs else {})
+        except (ConfigError, ValueError) as e:
+            print("Inputs:", e, flush=True)
+            return 2
         bars = load_bars(args.bars)
-        res = simulate(strategy, bars, deposit=args.deposit)
-        print(res, flush=True)
+        res = simulate(strategy, bars, inputs=inputs, deposit=args.deposit)
+        print("[RESULT] " + json.dumps(res), flush=True)
         return 0
 
     cfg_path = args.config or os.path.join(base, "webull.toml")
@@ -139,7 +147,8 @@ def main(strategy_cls, program_path, argv=None):
             return 4
         if args.save_bars:
             dump_bars(bars, args.save_bars)
-        print(simulate(strategy, bars, inputs=cfg.inputs, deposit=args.deposit), flush=True)
+        import json
+        print("[RESULT] " + json.dumps(simulate(strategy, bars, inputs=cfg.inputs, deposit=args.deposit)), flush=True)
         return 0
 
     with Lock(os.path.join(base, stem + ".lock")):

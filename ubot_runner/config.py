@@ -117,11 +117,17 @@ def parse(doc, strategy_inputs=None):
         max_open_positions=_num(lim, "max_open_positions", 3, int, 0, 100),
         daily_loss_pct=_num(lim, "daily_loss_pct", 3, float, 0, 100),
     )
-    inp = doc.get("inputs", {})
-    if not isinstance(inp, dict):
+    c.inputs = merge_inputs(strategy_inputs, doc.get("inputs", {}))
+    return c
+
+
+def merge_inputs(defaults, given):
+    """The program's own input defaults with the customer's values over them.
+    Only names the program declares, each the same kind of value as its default."""
+    if not isinstance(given, dict):
         raise ConfigError("[inputs] must be a table")
-    merged = dict(strategy_inputs or {})
-    for k, v in inp.items():
+    merged = dict(defaults or {})
+    for k, v in given.items():
         if k not in merged:
             raise ConfigError(f"input {k!r} is not one of this program's inputs: {', '.join(sorted(merged)) or 'none'}")
         d = merged[k]
@@ -132,8 +138,7 @@ def parse(doc, strategy_inputs=None):
         if isinstance(d, int) and not isinstance(d, bool) and isinstance(v, float) and v != int(v):
             raise ConfigError(f"input {k!r} must be a whole number")
         merged[k] = type(d)(v) if not isinstance(d, bool) else v
-    c.inputs = merged
-    return c
+    return merged
 
 
 def load(path, strategy_inputs=None):
