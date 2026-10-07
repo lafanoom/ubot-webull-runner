@@ -20,6 +20,7 @@ from tkinter import ttk
 
 from . import clock
 from .config import ConfigError, parse
+from . import shapes as sh
 from .tray import Tray
 from .ui import default_lang, text, ui_of, why
 
@@ -140,21 +141,24 @@ class Window:
         return tk.Label(parent, text=txt, fg=color, bg=bg or parent["bg"],
                         font=(self.mono if mono else self.f)(size, w), **kw)
 
-    def button(self, parent, txt, cmd, kind="ghost", size=10, **kw):
-        colors = {"main": (self.accent, "#06101A"), "ghost": ("#161D2B", INK), "buy": ("#16A34A", "#FFFFFF"),
+    def button(self, parent, txt, cmd, kind="ghost", size=10, pady=7, padx=16):
+        colors = {"main": (self.accent, "#06101A"), "ghost": ("#1A2233", INK), "buy": ("#16A34A", "#FFFFFF"),
                   "sell": ("#E11D48", "#FFFFFF"), "flat": (parent["bg"], INK2)}[kind]
-        b = tk.Button(parent, text=txt, command=cmd, bg=colors[0], fg=colors[1], activebackground=colors[0],
-                      activeforeground=colors[1], relief="flat", bd=0, padx=14, pady=6, cursor="hand2",
-                      font=self.f(size, "bold" if kind in ("main", "buy", "sell") else "normal"), **kw)
-        return b
+        return sh.Button(parent, txt, cmd, bg=colors[0], fg=colors[1], padx=padx, pady=pady, radius=10,
+                         font=self.f(size, "bold" if kind in ("main", "buy", "sell") else "normal"),
+                         outline="#2E3A52" if kind == "ghost" else "",
+                         gradient=(self.accent, "#3B82F6") if kind == "main" else None)
 
-    def card(self, parent, border=LINE, bg=PANEL):
-        return tk.Frame(parent, bg=bg, highlightbackground=border, highlightthickness=1, bd=0)
+    def pill(self, parent):
+        return sh.Button(parent, "", None, bg=parent["bg"], fg=INK, padx=12, pady=4, radius=13,
+                         font=self.f(10), cursor="arrow")
+
+    def card(self, parent, border=LINE, bg=PANEL, radius=14):
+        return sh.Box(parent, bg, border, radius=radius).inner
 
     def entry(self, parent, value="", width=12, show=None, mono=True):
-        e = tk.Entry(parent, bg=PANEL2, fg=INK, insertbackground=INK, relief="flat", width=width,
-                     highlightthickness=1, highlightbackground="#2A3448", highlightcolor=self.accent,
-                     disabledbackground="#0F141D", disabledforeground="#4B5567",
+        e = sh.entry(parent, PANEL2, "#2A3448", self.accent, fg=INK, insertbackground=INK, width=width,
+                     disabledbackground=PANEL2, disabledforeground="#4B5567",
                      font=(self.mono if mono else self.f)(11), show=show or "")
         e.insert(0, value)
         return e
@@ -250,10 +254,7 @@ class Window:
     def build_top(self, b):
         top = tk.Frame(b, bg="#0F1520", highlightbackground=LINE, highlightthickness=1)
         top.grid(row=0, column=0, columnspan=2, sticky="ew")
-        logo = tk.Canvas(top, width=36, height=36, bg="#0F1520", highlightthickness=0)
-        logo.create_rectangle(0, 0, 36, 36, fill=self.accent, outline="")
-        logo.create_line(7, 25, 15, 17, 20, 22, 29, 12, fill="#0A0E16", width=3)
-        logo.pack(side="left", padx=(16, 10), pady=8)
+        self.logo(top, 36).pack(side="left", padx=(16, 10), pady=8)
         self.label(top, self.name, 15, INK, "bold", bg="#0F1520").pack(side="left")
         self.sub = self.label(top, "", 10, INK3, bg="#0F1520")
         self.sub.pack(side="left", padx=12)
@@ -263,31 +264,58 @@ class Window:
         self.clock.pack(side="right", padx=8)
         self.mkt = self.label(top, "", 10, INK2, bg="#0F1520")
         self.mkt.pack(side="right", padx=8)
-        self.mode_pill = self.label(top, "", 10, INK, bg="#0F1520", padx=10, pady=3)
+        self.mode_pill = self.pill(top)
         self.mode_pill.pack(side="right", padx=4)
-        self.run_pill = self.label(top, "", 10, INK, bg="#0F1520", padx=10, pady=3)
+        self.run_pill = self.pill(top)
         self.run_pill.pack(side="right", padx=4)
+
+    def logo(self, parent, size):
+        cv = tk.Canvas(parent, width=size, height=size, bg=parent["bg"], highlightthickness=0)
+        sh.gradient_rect(cv, 0, 0, size, size, size // 4, self.accent, VIOLET, vertical=False)
+        k = size / 36
+        cv.create_line(7 * k, 25 * k, 15 * k, 17 * k, 20 * k, 22 * k, 29 * k, 12 * k, fill="#0A0E16",
+                       width=max(2, 3 * k), capstyle="round", joinstyle="round")
+        return cv
+
+    # The money cards are drawn whole on a canvas: a widget cannot sit on a gradient.
+    KPI_TINT = {"kpi_equity": ("#16233F", "#2B3A6B"), "kpi_today": ("#0F2A20", "#1D4A36"),
+                "kpi_stats": ("#1F1838", "#3A2C66"), "kpi_used": ("#2A1E10", "#4A3418")}
 
     def build_kpis(self, b):
         row = tk.Frame(b, bg=BG)
         row.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 0))
         self.k = {}
         keys = [k for k in ("kpi_equity", "kpi_today", "kpi_stats", "kpi_used") if self.shown(k)]
-        tints = {"kpi_equity": "#152038", "kpi_today": "#0F2A20", "kpi_stats": "#1F1838", "kpi_used": "#2A1E10"}
         for i, key in enumerate(keys):
-            tint = tints[key]
             row.grid_columnconfigure(i, weight=1, uniform="kpi")
-            c = self.card(row, "#23304A", tint)
-            c.grid(row=0, column=i, sticky="nsew", padx=(0, 0 if i == len(keys) - 1 else 10))
-            title = self.label(c, "", 9, INK3, bg=tint)
-            title.pack(anchor="w", padx=12, pady=(8, 0))
-            big = self.label(c, "", 18, INK, "bold", mono=True, bg=tint)
-            big.pack(anchor="w", padx=12)
-            small = self.label(c, "", 9, INK3, bg=tint)
-            small.pack(anchor="w", padx=12)
-            cv = tk.Canvas(c, height=34, width=60, bg=tint, highlightthickness=0)
-            cv.pack(fill="x", padx=12, pady=(2, 8))
-            self.k[key] = (title, big, small, cv, tint)
+            cv = tk.Canvas(row, height=118, width=200, bg=BG, highlightthickness=0)
+            cv.grid(row=0, column=i, sticky="nsew", padx=(0, 0 if i == len(keys) - 1 else 10))
+            cv.bind("<Configure>", lambda e, k=key: self.draw_kpi(k))
+            self.k[key] = {"cv": cv, "title": "", "big": "", "big_fg": INK, "small": "", "art": None}
+
+    def draw_kpi(self, key):
+        d = self.k.get(key)
+        if not d:
+            return
+        cv = d["cv"]
+        cv.delete("all")
+        w, h = cv.winfo_width(), cv.winfo_height()
+        if w < 40:
+            return
+        top, glow = self.KPI_TINT[key]
+        sh.gradient_rect(cv, 0, 0, w, h, 14, glow, PANEL, outline="#2A3654", step=2)
+        cv.create_text(14, 16, text=d["title"], anchor="w", fill=INK3, font=self.f(9))
+        cv.create_text(14, 44, text=d["big"], anchor="w", fill=d["big_fg"], font=self.mono(18, "bold"))
+        cv.create_text(14, 70, text=d["small"], anchor="w", fill=INK2, font=self.f(9))
+        if d["art"]:
+            d["art"](cv, 14, 84, w - 14, h - 10)
+
+    def set_kpi(self, key, title, big, small, big_fg=INK, art=None):
+        d = self.k.get(key)
+        if d is None:
+            return
+        d.update(title=title, big=big, small=small, big_fg=big_fg, art=art)
+        self.draw_kpi(key)
 
     def build_center(self, b):
         frame = self.card(b)
@@ -300,8 +328,8 @@ class Window:
             tabs = tabs[1:]
             self.view = "settings"
         for key, label in tabs:
-            btn = tk.Button(bar, text=label, relief="flat", bd=0, padx=14, pady=5, cursor="hand2",
-                            font=self.f(10, "bold"), command=lambda k=key: self.set_view(k))
+            btn = sh.Button(bar, label, lambda k=key: self.set_view(k), bg=PANEL, fg=INK3, padx=14, pady=5,
+                            radius=8, font=self.f(10, "bold"))
             btn.pack(side="left", padx=(0, 4))
             self.seg[key] = btn
         self.dirty_lbl = self.label(bar, "", 9, AMBER)
@@ -366,8 +394,8 @@ class Window:
         self.tab_btn = {}
         tabs = [("open", "open_tab")] + ([("closed", "closed_tab")] if self.shown("closed") else [])
         for key, label in tabs:
-            btn = tk.Button(bar, relief="flat", bd=0, padx=12, pady=6, cursor="hand2", font=self.f(10, "bold"),
-                            bg=PANEL, activebackground=PANEL, command=lambda k=key: self.set_tab(k))
+            btn = sh.Button(bar, self.t(label), lambda k=key: self.set_tab(k), bg=PANEL, fg=INK3, padx=12, pady=6,
+                            radius=8, font=self.f(10, "bold"))
             btn.pack(side="left")
             self.tab_btn[key] = (btn, self.t(label))
         self.sell_btn = self.button(bar, self.t("sell_sel"), self.ask_sell, "sell", 9)
@@ -409,7 +437,7 @@ class Window:
     def set_tab(self, tab):
         self.tab = tab
         for k, (btn, label) in self.tab_btn.items():
-            btn.config(text=label, fg=INK if k == tab else INK3)
+            btn.config(text=label, fg=INK if k == tab else INK3, bg="#1E293B" if k == tab else PANEL)
         self.tree_open.pack_forget()
         self.tree_closed.pack_forget()
         (self.tree_open if tab == "open" else self.tree_closed).pack(fill="both", expand=True)
@@ -417,7 +445,7 @@ class Window:
 
     # -- trading settings ---------------------------------------------------
     def build_settings(self, parent):
-        foot = tk.Frame(parent, bg=PANEL, highlightbackground=LINE, highlightthickness=1)
+        foot = self.card(parent, LINE, "#0F1520", radius=12)
         foot.pack(side="bottom", fill="x", padx=12, pady=(6, 8))
         outer = tk.Frame(parent, bg=PANEL)
         outer.pack(fill="both", expand=True, padx=12)
@@ -440,10 +468,10 @@ class Window:
         self.fill_settings()
 
     def section(self, parent, title, color=INK):
-        f = tk.Frame(parent, bg=PANEL, highlightbackground="#232C3F", highlightthickness=1)
+        f = self.card(parent, "#2A3550", PANEL, radius=12)
         f.pack(fill="x", pady=(10, 0))
         self.label(f, title, 10, color, "bold").pack(anchor="w", padx=12, pady=(8, 4))
-        body = tk.Frame(f, bg=PANEL)
+        body = tk.Frame(f, bg=f["bg"])
         body.pack(fill="x", padx=12, pady=(0, 10))
         return body
 
@@ -498,8 +526,8 @@ class Window:
         row.pack(anchor="w")
         self.mode_btns = {}
         for k, label in (("live", "m_live"), ("dry", "m_dry")):
-            b = tk.Button(row, text=self.t(label), relief="flat", bd=0, padx=14, pady=5, cursor="hand2",
-                          font=self.f(10, "bold"), command=lambda k=k: self.ask_mode(k))
+            b = sh.Button(row, self.t(label), lambda k=k: self.ask_mode(k), bg=PANEL2, fg=INK3, padx=14, pady=5,
+                          radius=8, font=self.f(10, "bold"))
             b.pack(side="left", padx=(0, 4))
             self.mode_btns[k] = b
         self.paint_mode(cfg.dry_run)
@@ -672,7 +700,8 @@ class Window:
         d = self.dialog(self.t("stop"))
         for key, desc, cmd, color in (("stop_new", "stop_new_d", lambda: (d.close(), self.live.ask("run", "paused")), INK),
                                       ("stop_all", "stop_all_d", lambda: self.confirm_stop_all(d), "#FB7185")):
-            b = tk.Frame(d.inner, bg=PANEL2, highlightbackground="#2A3448", highlightthickness=1, cursor="hand2")
+            b = self.card(d.inner, "#2A3448", PANEL2, radius=12)
+            b.config(cursor="hand2")
             b.pack(fill="x", pady=4)
             h = self.label(b, self.t(key), 11, color, "bold", bg=PANEL2)
             h.pack(anchor="w", padx=12, pady=(8, 0))
@@ -790,8 +819,8 @@ class Window:
         d = self.dialog(self.t("cl_title"))
         keep = tk.BooleanVar(value=False)
         for key, desc, act in (("cl_tray", "cl_tray_d", "tray"), ("cl_quit", "cl_quit_d", "quit")):
-            b = tk.Frame(d.inner, bg=PANEL2, highlightbackground=self.accent if act == "tray" else "#3A4458",
-                         highlightthickness=1, cursor="hand2")
+            b = self.card(d.inner, self.accent if act == "tray" else "#3A4458", PANEL2, radius=12)
+            b.config(cursor="hand2")
             b.pack(fill="x", pady=4)
             h = self.label(b, self.t(key), 11, INK, "bold", bg=PANEL2)
             h.pack(anchor="w", padx=12, pady=(8, 0))
@@ -910,17 +939,19 @@ class Window:
         self.run_btn.config(text=("❚❚  " + self.t("stop") + "  ▾") if run == "on" else ("▶  " + self.t("start")),
                             bg="#161D2B" if run == "on" else self.accent, fg=INK if run == "on" else "#06101A",
                             activebackground="#161D2B" if run == "on" else self.accent)
-        for w in self.notices.winfo_children():
-            w.destroy()
-        for on, key, color, bg in ((s["halted"], "n_stopfile", "#FDE68A", "#221A0B"),
-                                   (run == "paused", "n_paused", "#FDE68A", "#221A0B"),
-                                   (run == "off", "n_off", "#FDE68A", "#221A0B"),
-                                   (s["dry"], "n_dry", "#DDD6FE", "#1B1530")):
-            if on:
-                n = tk.Label(self.notices, text=self.t(key), bg=bg, fg=color, font=self.f(10), anchor="w",
-                             padx=12, pady=6, highlightbackground="#4A3A16" if bg == "#221A0B" else "#3D2F6B",
-                             highlightthickness=1)
-                n.pack(fill="x", pady=(8, 0))
+        shown = [x for x in ((s["halted"], "n_stopfile", "#FDE68A", "#221A0B", "#5A4518"),
+                             (run == "paused", "n_paused", "#FDE68A", "#221A0B", "#5A4518"),
+                             (run == "off", "n_off", "#FDE68A", "#221A0B", "#5A4518"),
+                             (s["dry"], "n_dry", "#DDD6FE", "#1B1530", "#4A3A80")) if x[0]]
+        if [x[1] for x in shown] != getattr(self, "_notices", None):
+            self._notices = [x[1] for x in shown]
+            for w in self.notices.winfo_children():
+                w.destroy()
+            for _, key, color, bg, line in shown:
+                box = self.card(self.notices, line, bg, radius=10)
+                box.pack(fill="x", pady=(8, 0))
+                tk.Label(box, text=self.t(key), bg=bg, fg=color, font=self.f(10), anchor="w",
+                         padx=8, pady=2).pack(fill="x")
         self.paint_kpis(s, cfg)
         self.paint_watch(s)
         self.paint_chart_head(s)
@@ -930,69 +961,88 @@ class Window:
 
     def paint_kpis(self, s, cfg):
         usd = s["usd"]
-        if "kpi_equity" in self.k:
-            title, big, small, cv, tint = self.k["kpi_equity"]
-            title.config(text=self.t("k_equity"))
-            big.config(text=money(usd[0] + usd[1]) if usd else "—")
-            small.config(text=self.t("k_cash", c=money(usd[0]), s=money(usd[1])) if usd else "")
-            self.spark(cv, [v for _, v in s["equity_days"][-30:]], self.accent)
-        if "kpi_today" in self.k:
-            title, big, small, cv, tint = self.k["kpi_today"]
-            tot = s["realized_today"] + s["unrealized"]
-            title.config(text=self.t("k_today"))
-            big.config(text=money(tot, True), fg=tone(tot))
-            small.config(text=self.t("k_today_d", c=money(s["realized_today"], True), o=money(s["unrealized"], True)))
-            self.bars(cv, [v for _, v in s["daily"]])
-        if "kpi_stats" in self.k:
-            title, big, small, cv, tint = self.k["kpi_stats"]
-            pnl = [p for (p,) in s["trades30"]]
-            won = [p for p in pnl if p > 0]
-            lost = [-p for p in pnl if p < 0]
-            pf = (sum(won) / sum(lost)) if lost else None
-            title.config(text=self.t("k_stats"))
-            big.config(text=f"{len(won) / len(pnl) * 100:.0f}%" if pnl else "—", fg=INK)
-            small.config(text=self.t("k_stats_d", w=len(won), n=len(pnl), pf=num(pf) if pf else ("∞" if won else "—"))
-                         + " · " + self.t("k_total", v=money(sum(pnl), True)))
-            cv.delete("all")
-            if pnl:
-                w = max(10, cv.winfo_width())
-                cv.create_rectangle(0, 12, w * len(won) / len(pnl), 22, fill=UP, outline="")
-                cv.create_rectangle(w * len(won) / len(pnl), 12, w, 22, fill=DOWN, outline="")
-        if "kpi_used" in self.k:
-            title, big, small, cv, tint = self.k["kpi_used"]
-            cap = cfg.limits.max_total_notional
-            title.config(text=self.t("k_used"))
-            big.config(text=money(s["in_use"]))
-            small.config(text=("/ " + money(cap) if cap else self.t("k_nocap")) + " · "
-                         + self.t("k_held", n=len(s["positions"]), m=cfg.limits.max_open_positions))
-            cv.delete("all")
-            w = max(10, cv.winfo_width())
-            cv.create_rectangle(0, 12, w, 20, fill="#232B3D", outline="")
-            if cap:
-                cv.create_rectangle(0, 12, w * min(1, s["in_use"] / cap), 20, fill=AMBER, outline="")
+        eq = [v for _, v in s["equity_days"][-30:]]
+        self.set_kpi("kpi_equity", self.t("k_equity"), money(usd[0] + usd[1]) if usd else "—",
+                     self.t("k_cash", c=money(usd[0]), s=money(usd[1])) if usd else "",
+                     art=lambda cv, x1, y1, x2, y2: self.spark(cv, eq, self.accent, x1, y1, x2, y2))
+        tot = s["realized_today"] + s["unrealized"]
+        days = [v for _, v in s["daily"]]
+        self.set_kpi("kpi_today", self.t("k_today"), money(tot, True),
+                     self.t("k_today_d", c=money(s["realized_today"], True), o=money(s["unrealized"], True)),
+                     big_fg=tone(tot), art=lambda cv, x1, y1, x2, y2: self.bars(cv, days, x1, y1, x2, y2))
+        pnl = [p for (p,) in s["trades30"]]
+        won = [p for p in pnl if p > 0]
+        lost = [-p for p in pnl if p < 0]
+        pf = (sum(won) / sum(lost)) if lost else None
+        share = len(won) / len(pnl) if pnl else None
 
-    def spark(self, cv, vals, color):
-        cv.delete("all")
+        def split(cv, x1, y1, x2, y2):
+            y = (y1 + y2) / 2
+            sh.round_rect(cv, x1, y - 4, x2, y + 4, 4, fill="#2A2F45", outline="")
+            if share is not None:
+                mid = x1 + (x2 - x1) * share
+                if share > 0:
+                    sh.gradient_rect(cv, x1, y - 4, max(mid, x1 + 8), y + 4, 4, "#16A34A", UP, vertical=False)
+                if share < 1:
+                    sh.gradient_rect(cv, min(mid, x2 - 8), y - 4, x2, y + 4, 4, DOWN, "#BE123C", vertical=False)
+        self.set_kpi("kpi_stats", self.t("k_stats"), f"{share * 100:.0f}%" if pnl else "—",
+                     self.t("k_stats_d", w=len(won), n=len(pnl), pf=num(pf) if pf else ("∞" if won else "—"))
+                     + " · " + self.t("k_total", v=money(sum(pnl), True)), art=split)
+        cap = cfg.limits.max_total_notional
+        used = s["in_use"]
+
+        def gauge(cv, x1, y1, x2, y2):
+            y = (y1 + y2) / 2
+            sh.round_rect(cv, x1, y - 4, x2, y + 4, 4, fill="#2A2F45", outline="")
+            if cap and used > 0:
+                end = x1 + (x2 - x1) * min(1, used / cap)
+                sh.gradient_rect(cv, x1, y - 4, max(end, x1 + 8), y + 4, 4, AMBER, "#F97316", vertical=False)
+        self.set_kpi("kpi_used", self.t("k_used"), money(used),
+                     ("/ " + money(cap) if cap else self.t("k_nocap")) + " · "
+                     + self.t("k_held", n=len(s["positions"]), m=cfg.limits.max_open_positions), art=gauge)
+
+    def spark(self, cv, vals, color, x1, y1, x2, y2):
         if len(vals) < 2:
             return
-        w, h = max(10, cv.winfo_width()), 34
         lo, hi = min(vals), max(vals)
         span = (hi - lo) or 1
         pts = []
         for i, v in enumerate(vals):
-            pts += [i * w / (len(vals) - 1), h - 3 - (v - lo) / span * (h - 6)]
-        cv.create_line(*pts, fill=color, width=2, smooth=True)
+            pts.append((x1 + i * (x2 - x1) / (len(vals) - 1), y2 - (v - lo) / span * (y2 - y1)))
+        self.fill_under(cv, pts, y2, color, PANEL)
+        cv.create_line(*[c for p in pts for c in p], fill=color, width=2, smooth=True)
 
-    def bars(self, cv, vals):
-        cv.delete("all")
+    def fill_under(self, cv, pts, base, color, bg, step=2, strength=0.35):
+        """The fading fill under a line: columns that fade from the line's colour to the panel."""
+        if len(pts) < 2:
+            return
+        x0, xn = pts[0][0], pts[-1][0]
+        top = min(p[1] for p in pts)
+        span = max(1.0, base - top)
+        j = 0
+        x = x0
+        while x <= xn:
+            while j < len(pts) - 2 and pts[j + 1][0] < x:
+                j += 1
+            (ax, ay), (bx, by) = pts[j], pts[j + 1]
+            y = ay + (by - ay) * ((x - ax) / ((bx - ax) or 1))
+            n = 6
+            for k in range(n):
+                ya = y + (base - y) * k / n
+                yb = y + (base - y) * (k + 1) / n
+                t = strength * (1 - ((ya - top) / span))
+                cv.create_line(x, ya, x, yb, fill=sh.mix(bg, color, max(0.0, t)), width=step)
+            x += step
+
+    def bars(self, cv, vals, x1, y1, x2, y2):
         if not vals:
             return
-        w, h = max(10, cv.winfo_width()), 34
         mx = max(abs(v) for v in vals) or 1
-        bw = w / len(vals)
+        bw = (x2 - x1) / len(vals)
         for i, v in enumerate(vals):
-            bh = max(3, abs(v) / mx * (h - 4))
-            cv.create_rectangle(i * bw + 1, h - bh, (i + 1) * bw - 2, h, fill=UP if v >= 0 else DOWN, outline="")
+            bh = max(4, abs(v) / mx * (y2 - y1))
+            c1, c2 = ("#4ADE80", "#15803D") if v >= 0 else ("#FB7185", "#9F1239")
+            sh.gradient_rect(cv, x1 + i * bw + 1, y2 - bh, x1 + (i + 1) * bw - 2, y2, 2, c1, c2)
 
     def paint_watch(self, s):
         if not self.watch_list:
@@ -1004,9 +1054,9 @@ class Window:
                 w.destroy()
             self.watch_rows = {}
             for sym in syms:
-                row = tk.Frame(self.watch_list, bg=PANEL, highlightbackground="#182033", highlightthickness=1,
-                               cursor="hand2")
-                row.pack(fill="x", padx=8, pady=1)
+                row = self.card(self.watch_list, "#1C2539", PANEL, radius=10)
+                row.config(cursor="hand2")
+                row.pack(fill="x", padx=8, pady=2)
                 left = tk.Frame(row, bg=PANEL)
                 left.pack(side="left", padx=8, pady=3)
                 name = self.label(left, sym, 11, INK, "bold")
@@ -1015,28 +1065,32 @@ class Window:
                 state.pack(anchor="w")
                 extra = self.label(row, "", 8, INK3)
                 extra.pack(side="left", padx=6)
-                buy = self.button(row, self.t("buy"), lambda x=sym: self.ask_buy(x), "buy", 9)
-                buy.config(pady=3)
-                buy.pack(side="right", padx=8)
+                buy = self.button(row, self.t("buy"), lambda x=sym: self.ask_buy(x), "buy", 9, pady=5, padx=14)
+                buy.pack(side="right", padx=(8, 2))
                 right = tk.Frame(row, bg=PANEL)
                 right.pack(side="right", padx=4)
                 px = self.label(right, "", 11, INK, mono=True)
                 px.pack(anchor="e")
-                chg = self.label(right, "", 9, INK3, mono=True)
+                chg = sh.Button(right, "", None, bg=PANEL, fg=INK3, padx=6, pady=1, radius=5,
+                                font=self.mono(9), cursor="arrow")
                 chg.pack(anchor="e")
-                for w in (row, left, name, state, right, px, chg, extra):
+                for w in (row, left, name, state, right, px, extra):
                     w.bind("<Button-1>", lambda e, x=sym: self.live.ask("select", x))
                 self.watch_rows[sym] = (row, left, name, state, px, chg, extra, buy, right)
         for sym, (row, left, name, state, px, chg, extra, buy, right) in self.watch_rows.items():
             q = s["quotes"].get(sym) or (None, None)
             sel = sym == s["selected"]
             bg = "#16203A" if sel else PANEL
-            for w in (row, left, name, state, px, chg, extra, right):
+            for w in (left, name, state, px, extra, right):
                 w.config(bg=bg)
-            row.config(highlightbackground=self.accent if sel else "#182033")
+            row._box.set(fill=bg, outline=self.accent if sel else "#1C2539")
+            buy.config(background=bg)
             state.config(text=self.t("w_held") if sym in held else self.t("w_wait"))
             px.config(text=num(q[0]))
-            chg.config(text=("" if q[1] is None else f"{q[1]:+.2f}%"), fg=tone(q[1]))
+            up = q[1] is not None and q[1] >= 0
+            chg.config(text=("" if q[1] is None else f"{q[1]:+.2f}%"), background=bg,
+                       fg="#4ADE80" if up else "#FB7185" if q[1] is not None else INK3,
+                       bg=("#123524" if up else "#3A1220") if q[1] is not None else bg)
             vals = s["values"].get(sym) or {}
             extra.config(text="  ".join(f"{k} {v:g}" if isinstance(v, (int, float)) else f"{k} {v}"
                                         for k, v in vals.items()))
@@ -1081,7 +1135,7 @@ class Window:
         pts = []
         for i, v in enumerate(vals):
             pts += [i * w / (len(vals) - 1), y(v)]
-        cv.create_polygon(*pts, w, h - 22, 0, h - 22, fill="#0F2A20" if color == UP else "#2A1018", outline="")
+        self.fill_under(cv, list(zip(pts[0::2], pts[1::2])), h - 22, color, PANEL, step=3, strength=0.32)
         cv.create_line(*pts, fill=color, width=2)
         if p:
             for v, c, dash in ((p["target"], UP, (6, 5)), (p["entry"], "#94A3B8", (2, 4)), (p["stop"], DOWN, (6, 5))):
