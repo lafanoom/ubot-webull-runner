@@ -48,11 +48,14 @@ def main():
     ap.add_argument("--strategy", default=os.path.join(HERE, "examples", "UBotExample.py"))
     ap.add_argument("--view", default="chart")
     ap.add_argument("--walk", help="click through the dialogs and save screenshots in this folder")
+    ap.add_argument("--no-keys", action="store_true", help="start on the connect screen (no keys yet)")
+    ap.add_argument("--size", help="window size WxH instead of maximised, e.g. 1280x720")
     args = ap.parse_args()
 
     strategy = load_strategy(args.strategy)()
     d = tempfile.mkdtemp(prefix="ubot-demo-")
-    cfg = Config(app_key="demo-key-0000a91f", app_secret="demo-secret-000000", dry_run=args.dry,
+    cfg = Config(app_key="" if args.no_keys else "demo-key-0000a91f",
+                 app_secret="" if args.no_keys else "demo-secret-000000", dry_run=args.dry,
                  symbols=tuple(PRICES), lang=args.lang, inputs=dict(strategy.INPUTS))
     cfg.limits.max_total_notional = 12000
     cfg.limits.max_notional_per_order = 6000
@@ -106,6 +109,9 @@ def main():
 
     root = tk.Tk()
     win = gui.Window(root, strategy.NAME or "Demo", "v1.00", strategy, cfg, cfg_path, connect, dump, make_live)
+    if args.size:
+        root.state("normal")
+        root.geometry(args.size + "+0+0")
     if args.view == "settings":
         root.after(4000, lambda: win.set_view("settings"))
     if args.walk:
@@ -151,7 +157,11 @@ def main():
                  (200, close_dialog), (1500, win.on_close), (1500, lambda: grab("6-close-ask")),
                  (200, close_dialog), (200, lambda: win.live.ask("run", "paused")), (1500, lambda: grab("7-paused")),
                  (200, lambda: win.set_view("settings")), (300, check_save), (3000, report),
-                 (200, lambda: grab("8-saved")), (500, win.quit)]
+                 (200, lambda: grab("8-saved")),
+                 (200, lambda: win.settings_inner.master.yview_moveto(0.42)), (800, lambda: grab("8b-settings-mid")),
+                 (200, lambda: win.settings_inner.master.yview_moveto(1.0)), (800, lambda: grab("8c-settings-end")),
+                 (200, lambda: (win.set_view("chart"), win.set_tab("closed"))), (1200, lambda: grab("9-closed")),
+                 (500, win.quit)]
         def run_step(i):
             if i < len(steps):
                 delay, fn = steps[i]

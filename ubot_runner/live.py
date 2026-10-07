@@ -48,6 +48,7 @@ class Live:
         self.selected = (engine.cfg.symbols or ("",))[0]
         self.quotes = {}
         self.chart = {}
+        self.sparks = {}                  # symbol -> (loaded at, [closes]) for the watch list's small lines
         self.stop_event = threading.Event()
         self.thread = None
         self.poll = poll_seconds
@@ -187,6 +188,19 @@ class Live:
         self.chart[symbol] = {"at": now, "bars": [(iso(b.time), b.close) for b in shown],
                               "today": bool(today), "day": clock.et_date(shown[-1].time).isoformat() if shown else ""}
 
+    SPARK_EVERY = 300                     # seconds between refreshes of one symbol's small line
+
+    def load_spark(self, symbol, now):
+        """The last 30 closes of one watched symbol, refreshed a few times an hour (one call each)."""
+        got = self.sparks.get(symbol)
+        if got and (now - got[0]).total_seconds() < self.SPARK_EVERY:
+            return
+        try:
+            bars = self.eng.broker.bars(symbol, "5m", 30) or []
+        except Exception:
+            bars = []
+        self.sparks[symbol] = (now, [b.close for b in bars[-30:]])
+
     def refresh(self, now, quick=False):
         eng = self.eng
         st = eng.state
@@ -196,6 +210,8 @@ class Live:
                 if q:
                     self.quotes[s] = q
             self.load_chart(self.selected, now)
+            for s in eng.cfg.symbols:
+                self.load_spark(s, now)
             usd = eng.broker.usd()
             if usd:
                 self.usd = usd
@@ -250,6 +266,7 @@ class Live:
             "trades30": [(t["pnl"],) for t in trades30], "in_use": eng.in_use(),
             "positions": positions, "closed": closed,
             "quotes": dict(self.quotes), "selected": self.selected,
+            "sparks": {s: v[1] for s, v in self.sparks.items()},
             "chart": self.chart.get(self.selected, {}).get("bars", []),
             "chart_day": "" if self.chart.get(self.selected, {}).get("today") else self.chart.get(self.selected, {}).get("day", ""),
             "values": values, "log": list(self.ring.lines)[-120:], "status": eng.status,
