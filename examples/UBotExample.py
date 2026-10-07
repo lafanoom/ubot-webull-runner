@@ -10,7 +10,7 @@ favour, the stop follows at trail_atr x ATR below the close (0 = off).
 """
 from ubot_runner.strategy import Strategy, atr, sma
 
-RUNNER = "0.1.1"
+RUNNER = "0.2.0"
 NAME = "Example Trend"
 
 
@@ -59,3 +59,14 @@ class UBotExample(Strategy):
         # modify
         if pos and p["trail_atr"] > 0 and last - pos.entry >= a:
             ctx.move_stop(symbol, last - p["trail_atr"] * a)
+
+    def levels(self, ctx, symbol, bars, position):
+        """New settings saved in the window reach the position held now:
+        the same stop/target rule as the buy, from the price it was bought at."""
+        p = ctx.inputs
+        a = atr(bars, p["atr_period"])
+        if a is None:
+            return None
+        stop = position.entry - p["stop_atr"] * a if p["stop_atr"] > 0 else None
+        target = position.entry + p["target_atr"] * a if p["target_atr"] > 0 else None
+        return stop, target

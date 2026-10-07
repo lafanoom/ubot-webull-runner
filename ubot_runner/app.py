@@ -1,6 +1,7 @@
 """Command line: run / check / simulate.
 
-    python "My Program v1.00.pyz"            # run (dry_run until you change it)
+    python "My Program v1.00.pyz"            # the program's window (dry_run until you switch to live)
+    python "My Program v1.00.pyz" --console  # run without the window, as text
     python "My Program v1.00.pyz" check      # read-only: keys, account, symbols
     python "My Program v1.00.pyz" simulate --bars bars.json
     python "My Program v1.00.pyz" simulate --fetch 1000    # bars from Webull, read-only
@@ -14,6 +15,8 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+
+import re
 
 from . import RUNNER, clock
 from .config import ConfigError, load
@@ -32,12 +35,18 @@ class Mask(logging.Filter):
         return True
 
 
-def setup_logging(path, secrets):
+def setup_logging(path, secrets, extra=()):
     root = logging.getLogger()
+    for h in root.handlers:
+        if isinstance(h, logging.FileHandler):
+            h.close()
     root.handlers.clear()
     root.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S")
-    for h in (logging.FileHandler(path, encoding="utf-8"), logging.StreamHandler(sys.stdout)):
+    outs = [logging.FileHandler(path, encoding="utf-8")]
+    if sys.stdout is not None:                        # pythonw has no console
+        outs.append(logging.StreamHandler(sys.stdout))
+    for h in outs + list(extra):
         h.setFormatter(fmt)
         h.addFilter(Mask(secrets))
         root.addHandler(h)
@@ -85,13 +94,20 @@ def main(strategy_cls, program_path, argv=None):
     ap.add_argument("--save-bars", help="simulate --fetch: also save the bars to this file")
     ap.add_argument("--deposit", type=float, default=10_000.0)
     ap.add_argument("--inputs", help='simulate --bars: input values as JSON, e.g. {"fast": 10}')
+    ap.add_argument("--console", action="store_true", help="run without the window")
     args = ap.parse_args(argv)
 
     strategy = strategy_cls()
     base = os.path.dirname(os.path.abspath(program_path))
     stem = os.path.splitext(os.path.basename(program_path))[0]
     name = program_name(strategy, program_path)
-    print(f"{name} | runner {RUNNER} | Python {sys.version.split()[0]}", flush=True)
+    if sys.stdout is not None:
+        print(f"{name} | runner {RUNNER} | Python {sys.version.split()[0]}", flush=True)
+
+    if args.command == "run" and not args.console and not os.environ.get("UBOT_FACTORY"):
+        from . import gui
+        if gui.available():
+            return run_window(strategy, args.config or os.path.join(base, "webull.toml"), base, stem, name)
 
     if args.command == "simulate" and args.bars:
         from .sim import load_bars, simulate
@@ -153,6 +169,67 @@ def main(strategy_cls, program_path, argv=None):
 
     with Lock(os.path.join(base, stem + ".lock")):
         return run(cfg, broker, strategy, base, stem, log)
+
+
+def version_of(stem):
+    m = re.search(r"\bv\.?(\d+\.\d+)\s*$", stem)
+    return "v" + m.group(1) if m else ""
+
+
+def run_window(strategy, cfg_path, base, stem, name):
+    """The window: asks for the keys the first time, then runs the program behind it."""
+    import tkinter as tk
+    from . import gui
+    from .broker import WebullBroker
+    from .config import dump
+    from .engine import Engine
+    from .live import Live, Ring
+    from .state import State
+
+    with Lock(os.path.join(base, stem + ".lock")):
+        try:
+            cfg = load(cfg_path, strategy.INPUTS, need_keys=False)
+        except ConfigError as e:
+            root = tk.Tk()
+            root.title(name)
+            tk.Label(root, text=f"{os.path.basename(cfg_path)}: {e}", padx=24, pady=24, wraplength=520,
+                     justify="left").pack()
+            root.mainloop()
+            return 2
+        ring = Ring()
+        log_path = os.path.join(base, stem + ".log")
+        setup_logging(log_path, cfg.secrets(), extra=[ring])
+        log = logging.getLogger("ubot")
+        log.info("start %s (runner %s) window", name, RUNNER)
+        token_dir = os.path.join(base, "webull-token")
+        os.makedirs(token_dir, exist_ok=True)
+
+        def connect(c):
+            setup_logging(log_path, cfg.secrets() + c.secrets(), extra=[ring])
+            broker = WebullBroker(c, token_dir)
+            kind = broker.connect()
+            log.info("connected, account type %s", kind)
+            return broker
+
+        def make_live(c, broker):
+            state = State(os.path.join(base, stem + ".db"))
+            eng = Engine(strategy, c, broker, state, stop_file=os.path.join(base, "STOP"), sleep=time.sleep)
+            live = Live(eng, cfg_path, dump, ring)
+            live.refresh(datetime.now(timezone.utc))
+            live.start()
+            return live
+
+        root = tk.Tk()
+        win = gui.Window(root, name, version_of(stem), strategy, cfg, cfg_path, connect, dump, make_live)
+        try:
+            root.mainloop()
+        finally:
+            if win.live and win.live.thread and win.live.thread.is_alive():
+                win.live.stop()
+            if win.live:
+                win.live.eng.state.close()
+        log.info("window closed - orders resting at Webull stay there")
+    return 0
 
 
 def check(cfg, broker, strategy, log):

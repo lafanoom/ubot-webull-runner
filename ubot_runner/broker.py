@@ -194,13 +194,24 @@ class WebullBroker:
         return out
 
     def last_price(self, symbol):
+        q = self.quote(symbol)
+        return q[0] if q else None
+
+    def quote(self, symbol):
+        """(last price, change % since the previous close or None), or None."""
         r, body = self._call(self.data.market_data.get_snapshot, symbol, "US_STOCK")
         if not r.ok:
             return None
         rows = body if isinstance(body, list) else (body or {}).get("result", [body]) if isinstance(body, dict) else []
         for s in rows or []:
             if isinstance(s, dict) and s.get("symbol") == symbol:
-                return _f(s.get("price")) or _f(s.get("close"))
+                px = _f(s.get("price")) or _f(s.get("close"))
+                if px is None:
+                    return None
+                ratio = _f(s.get("change_ratio"))
+                pre = _f(s.get("pre_close"))
+                chg = ratio * 100 if ratio is not None else ((px / pre - 1) * 100 if pre else None)
+                return px, chg
         return None
 
     # -- orders ------------------------------------------------------------
@@ -284,6 +295,10 @@ class FakeBroker:
 
     def last_price(self, symbol):
         return self.mark.get(symbol)
+
+    def quote(self, symbol):
+        px = self.mark.get(symbol)
+        return (px, None) if px is not None else None
 
     def _fill(self, o, price):
         q = o["qty"]

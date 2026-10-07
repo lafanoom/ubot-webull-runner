@@ -76,13 +76,15 @@ class Bars(Sequence):
 
 @dataclass(frozen=True)
 class Position:
-    """A position this program opened. Shares the customer bought by hand are not here."""
+    """A position this program holds: its own buys, and buys made by hand in its
+    window (by = "you"). Shares bought in the Webull app are not here."""
     symbol: str
     qty: int
     entry: float
     stop: Optional[float]
     target: Optional[float]
     opened: datetime
+    by: str = "program"
 
 
 @dataclass(frozen=True)
@@ -113,12 +115,29 @@ class Strategy:
     BAR: str = "1d"
     INPUTS: dict = {}
     WARMUP: int = 50             # closed bars needed before on_bar is called
+    UI: dict = {}                # changes to the standard window (see ubot_runner.ui.check_ui)
 
     def on_start(self, ctx):
         pass
 
     def on_bar(self, ctx, symbol: str, bars: Bars):
         raise NotImplementedError
+
+    def levels(self, ctx, symbol: str, bars: Bars, position: Position):
+        """Stop and target of a position held now, worked out from the current inputs.
+
+        The runner calls it when the customer saves new settings, so new values
+        reach the positions already held. Return (stop, target); None in either
+        place keeps that one as it is. Returning None keeps both."""
+        return None
+
+    def ui_values(self, ctx, symbol: str, bars: Bars):
+        """Extra figures for the watch list, {label: value}, when UI asks for them."""
+        return {}
+
+    def on_button(self, ctx, button: str):
+        """A button declared in UI["buttons"] was pressed. Ask through ctx like on_bar."""
+        pass
 
 
 # -- indicators (pure functions over lists, newest value last) ---------------

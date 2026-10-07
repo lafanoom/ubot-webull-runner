@@ -25,6 +25,7 @@ symbols = []             # tickers this program may trade, e.g. ["KO", "MSFT"]; 
 
 [limits]
 max_notional_per_order = 1000   # US dollars per buy
+max_total_notional = 0          # US dollars in use across all held positions; 0 = no cap
 max_orders_per_day = 10
 max_open_positions = 3
 daily_loss_pct = 3              # stop opening new positions today after this loss (% of account)
@@ -41,6 +42,7 @@ class ConfigError(Exception):
 @dataclass
 class Limits:
     max_notional_per_order: float = 1000.0
+    max_total_notional: float = 0.0     # dollars in use across held positions; 0 = no cap
     max_orders_per_day: int = 10
     max_open_positions: int = 3
     daily_loss_pct: float = 3.0
@@ -56,6 +58,8 @@ class Config:
     symbols: tuple = ()
     poll_seconds: int = 15
     daily_eval_delay_min: int = 1
+    lang: str = ""                      # window language: "th" | "en" | "" = the computer's
+    on_close: str = "ask"               # the window's close button: "ask" | "tray" | "quit"
     limits: Limits = field(default_factory=Limits)
     inputs: dict = field(default_factory=dict)
 
@@ -78,15 +82,28 @@ def _num(d, k, default, kind, lo, hi):
     return kind(v)
 
 
-def parse(doc, strategy_inputs=None):
+class NoKeys(ConfigError):
+    """The file is fine apart from the keys - the window asks for them."""
+
+
+def parse(doc, strategy_inputs=None, need_keys=True):
     c = Config()
     for k in ("app_key", "app_secret", "account_id", "host"):
         v = doc.get(k, getattr(c, k))
         if not isinstance(v, str):
             raise ConfigError(f"{k} must be text in quotes")
         setattr(c, k, v.strip())
-    if not c.app_key or not c.app_secret:
-        raise ConfigError("app_key and app_secret are empty - copy them from your Webull App Key page")
+    if need_keys and (not c.app_key or not c.app_secret):
+        raise NoKeys("app_key and app_secret are empty - copy them from your Webull App Key page")
+    win = doc.get("window", {})
+    if not isinstance(win, dict):
+        raise ConfigError("[window] must be a table")
+    c.lang = win.get("lang", "")
+    c.on_close = win.get("on_close", "ask")
+    if c.lang not in ("", "th", "en"):
+        raise ConfigError('window lang must be "th", "en" or ""')
+    if c.on_close not in ("ask", "tray", "quit"):
+        raise ConfigError('window on_close must be "ask", "tray" or "quit"')
     if not c.host or "/" in c.host or ":" in c.host:
         raise ConfigError("host must be a host name only, e.g. api.webull.co.th")
     if os.environ.get("UBOT_FACTORY") == "1" and not c.is_uat:
@@ -113,6 +130,7 @@ def parse(doc, strategy_inputs=None):
         raise ConfigError("[limits] must be a table")
     c.limits = Limits(
         max_notional_per_order=_num(lim, "max_notional_per_order", 1000, float, 1, 10_000_000),
+        max_total_notional=_num(lim, "max_total_notional", 0, float, 0, 100_000_000),
         max_orders_per_day=_num(lim, "max_orders_per_day", 10, int, 0, 1000),
         max_open_positions=_num(lim, "max_open_positions", 3, int, 0, 100),
         daily_loss_pct=_num(lim, "daily_loss_pct", 3, float, 0, 100),
@@ -141,14 +159,73 @@ def merge_inputs(defaults, given):
     return merged
 
 
-def load(path, strategy_inputs=None):
+def load(path, strategy_inputs=None, need_keys=True):
     if not os.path.exists(path):
         with open(path, "w", encoding="utf-8") as f:
             f.write(TEMPLATE)
-        raise ConfigError(f"created {path} - put your App Key and App Secret in it, then run again")
+        if need_keys:
+            raise NoKeys(f"created {path} - put your App Key and App Secret in it, then run again")
     try:
         with open(path, "rb") as f:
             doc = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{os.path.basename(path)} is not valid: {e}") from None
-    return parse(doc, strategy_inputs)
+    return parse(doc, strategy_inputs, need_keys)
+
+
+def _toml(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return repr(v) if v != int(v) or abs(v) >= 1e15 else str(int(v)) + ".0"
+    if isinstance(v, str):
+        if any(ord(ch) < 32 for ch in v):
+            raise ConfigError("text values cannot hold control characters")
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml(x) for x in v) + "]"
+    raise ConfigError(f"cannot write {type(v).__name__}")
+
+
+def dump(cfg, path):
+    """Write the settings back, keys included (the window saves here). Atomic: a
+    crash half-way leaves the old file, never half a file."""
+    L = cfg.limits
+    lines = [
+        "# Settings for your trading program. Keep this file private: it holds your keys.",
+        "# The program's window writes this file; you can also edit it by hand while it is closed.",
+        f"app_key = {_toml(cfg.app_key)}",
+        f"app_secret = {_toml(cfg.app_secret)}",
+        f"account_id = {_toml(cfg.account_id)}",
+        f"host = {_toml(cfg.host)}",
+        "",
+        f"dry_run = {_toml(cfg.dry_run)}           # true = only write what it would do; no order is sent",
+        f"symbols = {_toml(list(cfg.symbols))}",
+        f"poll_seconds = {cfg.poll_seconds}",
+        f"daily_eval_delay_min = {cfg.daily_eval_delay_min}",
+        "",
+        "[limits]",
+        f"max_notional_per_order = {_toml(float(L.max_notional_per_order))}",
+        f"max_total_notional = {_toml(float(L.max_total_notional))}",
+        f"max_orders_per_day = {L.max_orders_per_day}",
+        f"max_open_positions = {L.max_open_positions}",
+        f"daily_loss_pct = {_toml(float(L.daily_loss_pct))}",
+        "",
+        "[window]",
+        f"lang = {_toml(cfg.lang)}",
+        f"on_close = {_toml(cfg.on_close)}",
+        "",
+        "[inputs]",
+    ]
+    for k, v in cfg.inputs.items():
+        lines.append(f"{k} = {_toml(v)}")
+    text = "\n".join(lines) + "\n"
+    tomllib.loads(text)                       # never write a file this module could not read back
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)

@@ -8,14 +8,20 @@ One step does, in order:
 
 Rules the strategy cannot switch off (all in this file):
 - dry_run sends nothing; a STOP file next to the program sends nothing new;
+- run mode (kept across restarts): "on" · "paused" = no new buys by the
+  program, held positions still looked after · "off" = everything sold, then
+  nothing; buys made by hand in the window go through every rule below and are
+  looked after like the program's own;
 - only symbols listed in webull.toml are traded (empty list = nothing);
 - regular US hours only; long only; whole shares; one position per symbol;
-- caps: dollars per buy, orders per day, open positions, daily loss;
+- caps: dollars per buy, dollars in use, orders per day, open positions, daily loss;
 - the stop always rests at the broker (it survives this program being off);
-  a stop is only ever moved up;
+  the strategy only ever moves a stop up; new settings saved by the customer
+  may move it either way (it still rests at the broker);
 - a refused order is logged and dropped, never fired again; "accepted" is not
   "filled" - every order is read back.
 """
+import json
 import logging
 import math
 import re
@@ -26,7 +32,7 @@ from types import MappingProxyType
 from . import clock
 from .broker import OrderReq, round_price
 from .state import iso
-from .strategy import Bars, Buy, MoveStop, Position, Sell
+from .strategy import Bars, Buy, MoveStop, Position, Sell, Strategy
 
 log = logging.getLogger("ubot")
 
@@ -76,7 +82,10 @@ class Ctx:
 
 def _pos(r):
     return Position(r["symbol"], r["qty"], r["entry"], r["stop"], r["target"],
-                    datetime.fromisoformat(r["opened_at"]))
+                    datetime.fromisoformat(r["opened_at"]), r["opened_by"])
+
+
+RUN_MODES = ("on", "paused", "off")
 
 
 class Engine:
@@ -94,6 +103,7 @@ class Engine:
         self._last_sync = None
         self._said = set()
         self.status = ""
+        self.last_bars = {}       # symbol -> closed bars last handed to the strategy (for the window)
 
     # -- helpers -----------------------------------------------------------
     def cid(self, kind):
@@ -160,15 +170,15 @@ class Engine:
             getattr(self, "_done_" + o["kind"])(o, info, now)
 
     def _done_entry(self, o, info, now):
-        import json
         got = int(math.floor(info.filled_qty + 1e-9))
         if got <= 0:
             log.info("buy %s %s ended %s with nothing filled", o["qty"], o["symbol"], info.status)
             return
         extra = json.loads(o["extra"] or "{}")
         price = info.avg_price or extra.get("ref") or 0.0
-        self.state.open_position(o["symbol"], got, price, extra.get("stop"), extra.get("target"), now)
-        log.info("bought %d %s at %.2f%s", got, o["symbol"], price,
+        by = "you" if extra.get("by") == "you" else "program"
+        self.state.open_position(o["symbol"], got, price, extra.get("stop"), extra.get("target"), now, by=by)
+        log.info("bought %d %s at %.2f%s%s", got, o["symbol"], price, " (by you)" if by == "you" else "",
                  f" (asked {o['qty']})" if got != o["qty"] else "")
         self.protect(now)
 
@@ -218,6 +228,64 @@ class Engine:
     def can_send(self):
         return not self.cfg.dry_run and not self.halted()
 
+    # -- run mode (the window's stop / start) ---------------------------------
+    @property
+    def run_mode(self):
+        m = self.state.get("run", "on")
+        return m if m in RUN_MODES else "on"
+
+    def set_run(self, mode, now):
+        """on / paused: just the mode. off: sell everything first (stop all)."""
+        if mode not in RUN_MODES:
+            raise ValueError(mode)
+        self.state.put("run", mode)
+        log.info({"on": "started", "paused": "paused - no new buys, held positions still looked after",
+                  "off": "stop all - selling every position, then doing nothing"}[mode])
+        if mode == "off":
+            self.close_all(now)
+
+    def close_all(self, now):
+        for o in self.state.live_orders():
+            if o["kind"] == "entry" and o["status"] != "sending":
+                self.broker.cancel(o["cid"])
+        for s in list(self.state.positions()):
+            self.exit(s, "stop all", now)
+
+    # -- settings saved in the window ----------------------------------------
+    def apply_config(self, cfg, now):
+        """New settings take effect at once, including on the positions held now."""
+        self.cfg = cfg
+        self.ctx.inputs = MappingProxyType(dict(cfg.inputs))
+        self.relevel(now)
+
+    def relevel(self, now):
+        """Ask the strategy for the stop/target of each of its held positions under the new inputs.
+        Positions bought by hand keep the stop/target the customer typed."""
+        if type(self.strategy).levels is Strategy.levels:
+            return
+        for s, p in self.state.positions().items():
+            if p["closing"] or p["opened_by"] != "program":
+                continue
+            raw = self.broker.bars(s, self.strategy.BAR, self.strategy.WARMUP + 10)
+            closed = [b for b in raw or [] if clock.bar_closed(b.time, self.strategy.BAR, now)]
+            if len(closed) < self.strategy.WARMUP:
+                log.info("%s: not enough bars to work out the new stop/target - keeping them", s)
+                continue
+            self.ctx.now = now
+            try:
+                got = self.strategy.levels(self.ctx, s, Bars(closed), _pos(p))
+            except Exception:
+                log.exception("the program's levels() failed for %s - keeping its stop/target", s)
+                continue
+            if not got:
+                continue
+            stop, target = got
+            if target is not None and target > 0 and round_price(target) != p["target"]:
+                self.state.set_position(s, target=round_price(target))
+                log.info("target of %s is now %.2f (new settings)", s, round_price(target))
+            if stop is not None and stop > 0:
+                self.change_stop(s, stop, now, either_way=True)
+
     # -- 2. protect ----------------------------------------------------------
     def protect(self, now):
         if not self.can_send():
@@ -247,7 +315,8 @@ class Engine:
         if not p or p["closing"]:
             return
         if not self.can_send() or not self.market_open(now):
-            log.info("would sell %s (%s) - not sending now", symbol, reason)
+            self.once(f"wait:{symbol}:{reason}:{clock.et_date(now)}", "would sell %s (%s) - %s", symbol, reason,
+                      "waiting for the market to open" if self.can_send() else "not sending now")
             return
         if not p["stop_cid"]:
             self._sell(symbol, p["qty"], reason, now)
@@ -333,6 +402,7 @@ class Engine:
 
     def run_bar(self, symbol, closed, now):
         """Call the strategy if `closed` ends with a bar it has not seen. Returns True when called."""
+        self.last_bars[symbol] = closed
         if len(closed) < self.strategy.WARMUP:
             self.once("warm:" + symbol, "%s: %d closed bars, the program needs %d - waiting", symbol,
                       len(closed), self.strategy.WARMUP)
@@ -350,42 +420,101 @@ class Engine:
             log.exception("the program's on_bar failed for %s - no orders from this bar", symbol)
             return True
         self.state.put("strategy", self.ctx.state)
-        intents = self.ctx._intents
-        order = {Sell: 0, Buy: 1, MoveStop: 2}
-        for it in sorted(intents, key=lambda x: order[type(x)]):
+        intents = []
+        for it in self.ctx._intents:
             if it.symbol != symbol and it.symbol not in self.cfg.symbols:
                 log.warning("ignored a request for %s: not in your symbols list", it.symbol)
                 continue
-            if isinstance(it, Sell):
-                self.exit(it.symbol, it.reason or "program", now)
-            elif isinstance(it, Buy):
-                self.buy(it, closed[-1].close, now)
-            else:
-                self.move_stop(it, now)
+            intents.append(it)
+        last = closed[-1].close
+        self.act(intents, lambda s: last if s == symbol else self.broker.last_price(s), now)
         return True
 
-    def buy(self, it, ref, now):
+    def act(self, intents, ref_of, now, manual=False):
+        """Close -> open -> modify, whatever order they were asked in."""
+        order = {Sell: 0, Buy: 1, MoveStop: 2}
+        for it in sorted(intents, key=lambda x: order[type(x)]):
+            if isinstance(it, Sell):
+                self.exit(it.symbol, it.reason or ("you" if manual else "program"), now)
+            elif isinstance(it, Buy):
+                self.buy(it, ref_of(it.symbol), now, manual=manual)
+            else:
+                self.move_stop(it, now)
+
+    # -- the customer's own acts in the window -----------------------------------
+    def press(self, button, now):
+        """A button the strategy declared in UI: the customer's own act, like a buy by hand."""
+        if self.run_mode == "off":
+            log.info("the program is stopped - start it to use %s", button)
+            return
+        self.ctx.now = now
+        self.ctx._intents = []
+        try:
+            self.strategy.on_button(self.ctx, button)
+        except Exception:
+            log.exception("the program's on_button failed for %s", button)
+            return
+        self.state.put("strategy", self.ctx.state)
+        intents = [it for it in self.ctx._intents
+                   if it.symbol in self.cfg.symbols or self.state.position(it.symbol)]
+        self.act(intents, self.broker.last_price, now, manual=True)
+
+    def manual_buy(self, symbol, qty, stop, target, now, limit=None):
+        """A buy made by hand in the window: the same rules as the program's buys,
+        looked after the same way. Returns "" when sent, else why not."""
+        if self.run_mode == "off":
+            log.info("not buying %s: the program is stopped - start it first", symbol)
+            return "the program is stopped"
+        ref = limit if limit else self.broker.last_price(symbol)
+        it = Buy(symbol, qty=qty, stop=stop, target=target, reason="by you")
+        return self.buy(it, ref, now, manual=True, limit=limit)
+
+    def manual_sell(self, symbol, now):
+        if not self.state.position(symbol):
+            return "not held"
+        self.exit(symbol, "sold by you", now)
+        return ""
+
+    def buy(self, it, ref, now, manual=False, limit=None):
+        """Returns "" when sent (or written, in a dry run), else why not."""
         s = it.symbol
-        why = self.refuse_buy(it, ref, now)
+        why = self.refuse_buy(it, ref, now, manual=manual)
         if why:
             log.info("not buying %s: %s", s, why)
-            return
+            return why
         qty = it.qty if it.qty is not None else int(math.floor(it.notional / ref))
         desc = f"{qty} {s} ~{qty * ref:.2f} USD" + (f" stop {it.stop:.2f}" if it.stop else "") + \
             (f" target {it.target:.2f}" if it.target else "") + (f" ({it.reason})" if it.reason else "")
         if self.cfg.dry_run:
             log.info("DRY RUN - would buy %s", desc)
-            return
-        req = OrderReq(self.cid("E"), s, "BUY", "MARKET", qty)
+            return ""
+        if limit:
+            req = OrderReq(self.cid("E"), s, "BUY", "LIMIT", qty, limit_price=round_price(limit))
+        else:
+            req = OrderReq(self.cid("E"), s, "BUY", "MARKET", qty)
         extra = {"stop": round_price(it.stop) if it.stop else None,
-                 "target": round_price(it.target) if it.target else None, "ref": ref, "reason": it.reason}
+                 "target": round_price(it.target) if it.target else None, "ref": ref, "reason": it.reason,
+                 "by": "you" if manual else "program"}
         if self.send("entry", req, now, extra=extra):
             log.info("buy sent: %s", desc)
+            return ""
+        return "Webull refused the order"
 
-    def refuse_buy(self, it, ref, now):
+    def in_use(self):
+        """Dollars held now plus dollars in buys still in flight."""
+        held = sum(p["qty"] * p["entry"] for p in self.state.positions().values())
+        flying = sum(o["qty"] * (json.loads(o["extra"] or "{}").get("ref") or 0)
+                     for o in self.state.live_orders() if o["kind"] == "entry")
+        return held + flying
+
+    def refuse_buy(self, it, ref, now, manual=False):
         lim = self.cfg.limits
         if self.halted():
             return "STOP file is present"
+        if self.run_mode == "off":
+            return "the program is stopped"
+        if self.run_mode == "paused" and not manual:
+            return "the program is paused - no new buys"
         if it.symbol not in self.cfg.symbols:
             return "not in your symbols list"
         if not self.market_open(now):
@@ -411,6 +540,8 @@ class Engine:
             return f"stop {it.stop} must be below the price {ref:.2f}"
         if it.target is not None and not it.target > ref:
             return f"target {it.target} must be above the price {ref:.2f}"
+        if lim.max_total_notional > 0 and self.in_use() + qty * ref > lim.max_total_notional + 1e-9:
+            return f"{self.in_use() + qty * ref:.2f} USD in use would be above max_total_notional ({lim.max_total_notional:g})"
         open_n = len(self.state.positions()) + sum(1 for o in self.state.live_orders() if o["kind"] == "entry")
         if open_n >= lim.max_open_positions:
             return f"max_open_positions ({lim.max_open_positions}) reached"
@@ -427,17 +558,20 @@ class Engine:
         return ""
 
     def move_stop(self, it, now):
-        p = self.state.position(it.symbol)
+        self.change_stop(it.symbol, it.price, now)
+
+    def change_stop(self, symbol, price, now, either_way=False):
+        p = self.state.position(symbol)
         if not p or p["closing"]:
             return
-        new = round_price(it.price)
-        if p["stop"] is not None and new <= p["stop"]:
-            return                                    # a stop only moves up
+        new = round_price(price)
+        if p["stop"] is not None and (new == p["stop"] or (new < p["stop"] and not either_way)):
+            return                                    # the strategy only moves a stop up
         if self.cfg.dry_run:
-            log.info("DRY RUN - would move the stop of %s to %.2f", it.symbol, new)
+            log.info("DRY RUN - would move the stop of %s to %.2f", symbol, new)
             return
         if not p["stop_cid"]:
-            self.state.set_position(it.symbol, stop=new)
+            self.state.set_position(symbol, stop=new)
             self.protect(now)
             return
         if not self.can_send():
@@ -452,11 +586,12 @@ class Engine:
             elif info and info.status == "OPEN":
                 r = self.broker.replace(p["stop_cid"], p["qty"], stop_price=new)
         if r.ok:
-            self.state.set_position(it.symbol, stop=new)
+            self.state.set_position(symbol, stop=new)
             self.state.set_order(p["stop_cid"], now, stop_price=new)
-            log.info("stop of %s moved up to %.2f", it.symbol, new)
+            log.info("stop of %s moved %s to %.2f", symbol,
+                     "down" if p["stop"] is not None and new < p["stop"] else "up", new)
         else:
-            log.warning("could not move the stop of %s: %s %s", it.symbol, r.code, r.message)
+            log.warning("could not move the stop of %s: %s %s", symbol, r.code, r.message)
 
     # -- one live step ---------------------------------------------------------
     def step(self, now):
@@ -464,12 +599,17 @@ class Engine:
         self.sync_positions(now)
         self.protect(now)
         self.watch_targets(now)
-        self.evaluate(now)
+        if self.run_mode == "off":
+            self.close_all(now)        # a sale that waited for the market to open
+        else:
+            self.evaluate(now)
         self.reconcile(now)
         self.status = self.status_line(now)
 
     def status_line(self, now):
         mode = "STOPPED (STOP file)" if self.halted() else "DRY RUN" if self.cfg.dry_run else "LIVE"
+        if self.run_mode != "on":
+            mode += " | " + {"paused": "PAUSED (no new buys)", "off": "STOPPED (stop all)"}[self.run_mode]
         mkt = "open" if clock.regular_open(now) else "closed"
         pos = ", ".join(f"{s} {p['qty']}" + (f" stop {p['stop']:.2f}" if p["stop"] else "") +
                         (f" target {p['target']:.2f}" if p["target"] else "") +

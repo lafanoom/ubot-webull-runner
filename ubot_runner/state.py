@@ -2,7 +2,8 @@
 
 - orders: every order this program sent (written *before* it is sent, so a crash
   between "sent" and "answered" is found again on the next start);
-- positions: shares this program bought, with their stop/target;
+- positions: shares this program holds (its own buys and the buys made by hand in
+  its window), with their stop/target;
 - trades: closed round trips (for the daily loss limit and the log);
 - kv: strategy state (ctx.state) and the runner's own markers.
 """
@@ -17,11 +18,12 @@ CREATE TABLE IF NOT EXISTS orders (
   avg_price REAL, stop_price REAL, extra TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS positions (
   symbol TEXT PRIMARY KEY, qty INTEGER NOT NULL, entry REAL NOT NULL, stop REAL, target REAL,
-  stop_cid TEXT, exit_cid TEXT, closing TEXT, close_reason TEXT, opened_at TEXT NOT NULL);
+  stop_cid TEXT, exit_cid TEXT, closing TEXT, close_reason TEXT, opened_at TEXT NOT NULL,
+  opened_by TEXT NOT NULL DEFAULT 'program');
 CREATE TABLE IF NOT EXISTS trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, qty INTEGER NOT NULL,
   entry REAL NOT NULL, exit REAL NOT NULL, pnl REAL NOT NULL, reason TEXT,
-  opened_at TEXT NOT NULL, closed_at TEXT NOT NULL);
+  opened_at TEXT NOT NULL, closed_at TEXT NOT NULL, opened_by TEXT NOT NULL DEFAULT 'program');
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
@@ -34,9 +36,13 @@ def iso(t=None):
 
 class State:
     def __init__(self, path=":memory:"):
-        self.db = sqlite3.connect(path)
+        self.db = sqlite3.connect(path, check_same_thread=False)   # the window's thread opens it, the engine's uses it
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        for table in ("positions", "trades"):   # files written by runner 0.1.x
+            cols = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            if "opened_by" not in cols:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN opened_by TEXT NOT NULL DEFAULT 'program'")
         self.db.commit()
 
     def close(self):
@@ -83,11 +89,11 @@ class State:
     def position(self, symbol):
         return self.db.execute("SELECT * FROM positions WHERE symbol=?", (symbol,)).fetchone()
 
-    def open_position(self, symbol, qty, entry, stop, target, now=None):
-        self.db.execute("INSERT INTO positions(symbol,qty,entry,stop,target,opened_at) VALUES(?,?,?,?,?,?)"
+    def open_position(self, symbol, qty, entry, stop, target, now=None, by="program"):
+        self.db.execute("INSERT INTO positions(symbol,qty,entry,stop,target,opened_at,opened_by) VALUES(?,?,?,?,?,?,?)"
                         " ON CONFLICT(symbol) DO UPDATE SET entry=(entry*qty+excluded.entry*excluded.qty)/(qty+excluded.qty),"
                         " qty=qty+excluded.qty",
-                        (symbol, qty, entry, stop, target, iso(now)))
+                        (symbol, qty, entry, stop, target, iso(now), by))
         self.db.commit()
 
     def set_position(self, symbol, **f):
@@ -100,9 +106,10 @@ class State:
         if not p:
             return None
         pnl = (exit_price - p["entry"]) * p["qty"] if exit_price is not None else 0.0
-        self.db.execute("INSERT INTO trades(symbol,qty,entry,exit,pnl,reason,opened_at,closed_at) VALUES(?,?,?,?,?,?,?,?)",
+        self.db.execute("INSERT INTO trades(symbol,qty,entry,exit,pnl,reason,opened_at,closed_at,opened_by)"
+                        " VALUES(?,?,?,?,?,?,?,?,?)",
                         (symbol, p["qty"], p["entry"], exit_price if exit_price is not None else p["entry"],
-                         pnl, reason, p["opened_at"], iso(now)))
+                         pnl, reason, p["opened_at"], iso(now), p["opened_by"]))
         self.db.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
         self.db.commit()
         return pnl
@@ -110,5 +117,7 @@ class State:
     def realized_since(self, t):
         return self.db.execute("SELECT COALESCE(SUM(pnl),0) FROM trades WHERE closed_at>=?", (t,)).fetchone()[0]
 
-    def trades(self):
+    def trades(self, since=None):
+        if since:
+            return self.db.execute("SELECT * FROM trades WHERE closed_at>=? ORDER BY id", (since,)).fetchall()
         return self.db.execute("SELECT * FROM trades ORDER BY id").fetchall()
