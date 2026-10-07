@@ -144,7 +144,7 @@ class Table(tk.Frame):
         self.rows, self.sel, self.hover, self.on_select = [], None, None, on_select
         self.head = tk.Canvas(self, bg=HEAD, highlightthickness=0, bd=0, height=P(32))
         self.head.pack(fill="x")
-        self.body = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.body = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, height=1, width=1)
         self.body.pack(fill="both", expand=True)
         self.rh = P(44)
         self.head.bind("<Configure>", lambda e: self.draw_head())
@@ -592,9 +592,18 @@ class Window:
         self.build_center(b)
         self.build_watch(b)
         self.build_bottom(b)
-        b.grid_rowconfigure(3, weight=20, minsize=P(250))
-        b.grid_rowconfigure(4, weight=17, minsize=P(180))
+        self.split_rows()
         self.snap_at = None
+
+    def split_rows(self):
+        """How the window's height is shared between the middle and the bottom: the chart gets a little
+        more than the tables; the settings form gets most of it (the tables keep two rows)."""
+        if self.view == "settings":
+            self.body.grid_rowconfigure(3, weight=40, minsize=P(250))
+            self.body.grid_rowconfigure(4, weight=9, minsize=P(170))
+        else:
+            self.body.grid_rowconfigure(3, weight=20, minsize=P(250))
+            self.body.grid_rowconfigure(4, weight=17, minsize=P(180))
 
     def build_top(self, b):
         wrap = tk.Frame(b, bg=TOPBG)
@@ -752,6 +761,7 @@ class Window:
     def set_view(self, view):
         self.view = view
         self.seg.set(view)
+        self.split_rows()
         self.chart_frame.pack_forget()
         self.settings_frame.pack_forget()
         (self.chart_frame if view == "chart" else self.settings_frame).pack(fill="both", expand=True)
@@ -1066,6 +1076,14 @@ class Window:
         d = self.dialog(self.t("lv_title"), border=UP, tint="#0F2A20")
         acct = "••••" + self.live.snapshot().get("account", "")
         self.label(d.inner, self.t("lv_body", a=acct), 14, SOFT, wraplength=P(470), justify="left").pack(anchor="w")
+        L = cur.limits
+        limits = tk.Frame(d.inner, bg=PANEL)
+        limits.pack(anchor="w", pady=(P(6), 0))
+        for i, (label, v) in enumerate(((self.t("k_used"), L.max_total_notional), (self.t("l_per"), L.max_notional_per_order))):
+            if i:
+                self.label(limits, "·", 13, INK3).pack(side="left")
+            self.label(limits, label, 13, INK3).pack(side="left")
+            self.label(limits, money0(v) if v else self.t("k_nocap"), 13, INK, mono=True).pack(side="left", padx=(0, P(8)))
         var = tk.BooleanVar(value=False)
         go = self.button(d.btns, self.t("lv_go"), lambda: (d.close(), self.save_mode(False)), "buy", 15, height=44,
                          padx=22, radius=10)
