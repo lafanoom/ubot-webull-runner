@@ -67,3 +67,7 @@ Simulation runs the same engine against an in-memory broker: market orders fill 
 the next bar's open, a stop touched inside a bar fills at the stop (or the open on a
 gap) before any target in the same bar. It is an estimate - no spread, no slippage
 beyond gaps, no partial fills.
+
+## License
+
+Apache License 2.0 - see [LICENSE](LICENSE).
