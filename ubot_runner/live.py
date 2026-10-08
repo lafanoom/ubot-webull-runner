@@ -198,7 +198,8 @@ class Live:
             return
         tf = self.chart_tf
         c = self.chart.get(symbol)
-        if c and not force and c["tf"] == tf and                 (now - c["at"]).total_seconds() < self.CHART_EVERY.get(tf, 60):
+        if c and not force and c["tf"] == tf and \
+                (now - c["at"]).total_seconds() < self.CHART_EVERY.get(tf, 60):
             return
         inputs = dict(self.eng.cfg.inputs)
         extra = warmup(self.plot, inputs)
