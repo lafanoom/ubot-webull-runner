@@ -6,5 +6,6 @@ dist/
 *.log
 *.lock
 webull.toml
+window.json
 webull-token/
 STOP

@@ -17,6 +17,7 @@ canvases (see shapes.py). Every size here is in CSS pixels through `P()`, which
 scales with the screen's DPI; the process is DPI-aware so text stays sharp.
 """
 import copy
+import json
 import os
 import queue
 import threading
@@ -293,7 +294,7 @@ class Table(tk.Frame):
 
 
 class Window:
-    def __init__(self, root, name, version, strategy, cfg, cfg_path, connect, save_cfg, make_live):
+    def __init__(self, root, name, version, strategy, cfg, cfg_path, connect, save_cfg, make_live, prefs_path=None):
         self.root = root
         self.name = name
         self.version = version
@@ -311,7 +312,12 @@ class Window:
         self.tray = None
         self.snap_at = None
         self.view = "chart"
-        self.split_frac = 0.56     # the middle panels' share of the height they and the bottom ones split
+        # what the window remembers between runs (only its own layout - never keys or settings)
+        self.prefs_path = prefs_path or os.path.join(os.path.dirname(os.path.abspath(cfg_path)), "window.json")
+        self.prefs = self.load_prefs()
+        # the middle panels' share of the height they and the bottom ones split
+        split = self.prefs.get("split")
+        self.split_frac = min(0.9, max(0.15, split)) if isinstance(split, (int, float)) else self.SPLIT_DEFAULT
         self.tab = "open"
         self.dirty = False
         self.form = {}
@@ -608,6 +614,7 @@ class Window:
         self.build_split(b)
         self.snap_at = None
 
+    SPLIT_DEFAULT = 0.56
     SPLIT_MIN = (250, 150)          # the smallest the middle / bottom panels may be dragged to (unscaled px)
 
     def build_split(self, b):
@@ -650,6 +657,7 @@ class Window:
             if "frac" in drag:
                 self.split_frac = drag["frac"]
                 self.split_rows()
+                self.save_prefs(split=round(self.split_frac, 4))
             drag.clear()
             grip(bar.winfo_containing(e.x_root, e.y_root) is bar)
         bar.bind("<Configure>", lambda e: grip())
@@ -658,8 +666,36 @@ class Window:
         bar.bind("<ButtonPress-1>", press)
         bar.bind("<B1-Motion>", move)
         bar.bind("<ButtonRelease-1>", release)
-        bar.bind("<Double-Button-1>", lambda e: (setattr(self, "split_frac", 0.56), self.split_rows()))
+        def reset(e):
+            self.split_frac = self.SPLIT_DEFAULT
+            self.split_rows()
+            self.save_prefs(split=None)
+        bar.bind("<Double-Button-1>", reset)
         self.split_rows()
+
+    def load_prefs(self):
+        try:
+            with open(self.prefs_path, encoding="utf-8") as f:
+                doc = json.load(f)
+            return doc if isinstance(doc, dict) else {}
+        except (OSError, ValueError):
+            return {}                       # missing or unreadable: the default layout
+
+    def save_prefs(self, **kw):
+        """Remember layout choices in window.json beside webull.toml. A failed write only means the
+        next start uses the default layout."""
+        for k, v in kw.items():
+            if v is None:
+                self.prefs.pop(k, None)
+            else:
+                self.prefs[k] = v
+        tmp = self.prefs_path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.prefs, f)
+            os.replace(tmp, self.prefs_path)
+        except OSError:
+            pass
 
     def split_heights(self):
         return self.body.grid_bbox(0, 3)[3], self.body.grid_bbox(0, 5)[3]

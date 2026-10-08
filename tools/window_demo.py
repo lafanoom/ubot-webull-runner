@@ -108,7 +108,8 @@ def main():
     threading.Thread(target=wiggle, daemon=True).start()
 
     root = tk.Tk()
-    win = gui.Window(root, strategy.NAME or "Demo", "v1.00", strategy, cfg, cfg_path, connect, dump, make_live)
+    win = gui.Window(root, strategy.NAME or "Demo", "v1.00", strategy, cfg, cfg_path, connect, dump, make_live,
+                     prefs_path=os.path.join(tempfile.gettempdir(), "ubot-demo-window.json"))  # outlives the fresh demo folder
     if args.size:
         root.state("normal")
         root.geometry(args.size + "+0+0")
