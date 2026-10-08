@@ -10,7 +10,7 @@ favour, the stop follows at trail_atr x ATR below the close (0 = off).
 """
 from ubot_runner.strategy import Strategy, atr, sma
 
-RUNNER = "0.2.0"
+RUNNER = "0.3.0"
 NAME = "Example Trend"
 
 
@@ -28,6 +28,12 @@ class UBotExample(Strategy):
         "trail_atr": 2.0,      # 0 = no trailing
         "notional_usd": 1000.0,
     }
+    # what the rules read, drawn on the chart (follows the settings)
+    PLOT = [
+        {"kind": "sma", "period": "fast"},
+        {"kind": "sma", "period": "slow"},
+        {"kind": "atr", "period": "atr_period"},
+    ]
 
     def on_bar(self, ctx, symbol, bars):
         p = ctx.inputs

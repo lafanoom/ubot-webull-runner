@@ -9,4 +9,4 @@ Runs on the customer's own machine with the customer's own App Key. Nothing is
 ever sent anywhere except to Webull.
 """
 
-RUNNER = "0.2.0"
+RUNNER = "0.3.0"

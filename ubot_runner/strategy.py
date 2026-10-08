@@ -10,6 +10,7 @@ for things through `ctx`:
         BAR = "1d"
         INPUTS = {"fast": 20, "slow": 50, "stop_atr": 2.0, "target_atr": 4.0}
         WARMUP = 60
+        PLOT = [{"kind": "ema", "period": "fast"}, {"kind": "ema", "period": "slow"}]
 
         def on_bar(self, ctx, symbol, bars):
             ...
@@ -116,6 +117,7 @@ class Strategy:
     INPUTS: dict = {}
     WARMUP: int = 50             # closed bars needed before on_bar is called
     UI: dict = {}                # changes to the standard window (see ubot_runner.ui.check_ui)
+    PLOT: list = []              # indicator lines on the chart (see ubot_runner.plot.check_plot)
 
     def on_start(self, ctx):
         pass
@@ -133,6 +135,11 @@ class Strategy:
 
     def ui_values(self, ctx, symbol: str, bars: Bars):
         """Extra figures for the watch list, {label: value}, when UI asks for them."""
+        return {}
+
+    def plot(self, ctx, symbol: str, bars: Bars):
+        """Values of the PLOT items of kind "line", {label: [one value per bar, oldest first]}.
+        `bars` are the chart's bars, at the size the customer is looking at."""
         return {}
 
     def on_button(self, ctx, button: str):

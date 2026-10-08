@@ -21,7 +21,11 @@ from .strategy import Bar
 
 log = logging.getLogger("ubot")
 
-TIMESPAN = {"1d": "D", "1h": "M60", "30m": "M30", "15m": "M15", "5m": "M5"}
+TIMESPAN = {"1d": "D", "1h": "M60", "30m": "M30", "15m": "M15", "5m": "M5",
+            # chart only (a strategy runs on BAR_SIZES)
+            "1m": "M1", "2h": "M120", "4h": "M240", "1w": "W", "1mo": "M"}
+CHART_SIZES = ("1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w", "1mo")
+DAILY_UP = ("1d", "1w", "1mo")
 
 
 @dataclass
@@ -173,7 +177,7 @@ class WebullBroker:
     # -- market data -------------------------------------------------------
     def bars(self, symbol, bar, count):
         kw = {"count": str(min(max(count, 1), 1200))}
-        if bar != "1d":
+        if bar not in DAILY_UP:
             kw["trading_sessions"] = "RTH"
         r, body = self._call(self.data.market_data.get_history_bar, symbol, "US_STOCK", TIMESPAN[bar], **kw)
         if not r.ok:

@@ -40,6 +40,26 @@ def fake_history(symbol, p, now, n=78):
     return out
 
 
+MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "2h": 120, "4h": 240, "1d": 1440, "1w": 10080,
+           "1mo": 43200}
+
+
+class DemoBroker(FakeBroker):
+    """Fake bars at every size the chart offers, ending at the current price."""
+
+    def bars(self, symbol, bar, count):
+        now = datetime.now(timezone.utc)
+        step = timedelta(minutes=MINUTES.get(bar, 5))
+        rnd = random.Random(symbol + bar)
+        vol = 0.003 * (MINUTES.get(bar, 5) / 5) ** 0.5
+        px, back = self.mark.get(symbol, 100.0), []
+        for i in range(count):                     # walk back from now so the last close is the price
+            o = px * (1 - rnd.gauss(0.0004, vol))
+            back.append(Bar(now - step * (i + 1), o, max(o, px) * (1 + vol / 3), min(o, px) * (1 - vol / 3), px, 1e5))
+            px = o
+        return back[::-1]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lang", default="th")
@@ -48,6 +68,8 @@ def main():
     ap.add_argument("--strategy", default=os.path.join(HERE, "examples", "UBotExample.py"))
     ap.add_argument("--view", default="chart")
     ap.add_argument("--walk", help="click through the dialogs and save screenshots in this folder")
+    ap.add_argument("--chart-walk", help="hover a trade arrow, switch bar sizes and the two chart toggles; "
+                                          "save screenshots in this folder")
     ap.add_argument("--no-keys", action="store_true", help="start on the connect screen (no keys yet)")
     ap.add_argument("--size", help="window size WxH instead of maximised, e.g. 1280x720")
     args = ap.parse_args()
@@ -62,7 +84,7 @@ def main():
     cfg_path = os.path.join(d, "webull.toml")
     dump(cfg, cfg_path)
     now = datetime.now(timezone.utc)
-    fb = FakeBroker(cash=22680.0)
+    fb = DemoBroker(cash=22680.0)
     fb.account_id = "84214821"
     fb.instant = True
     for s, p in PRICES.items():
@@ -77,8 +99,10 @@ def main():
                                                  ("PLTR", 50, 40.3, 39.7, "stop", "program"),
                                                  ("F", 300, 11.5, 11.88, "sold by you", "you"),
                                                  ("NVDA", 25, 176.1, 178.9, "program", "program"),
-                                                 ("TSLA", 8, 248.4, 242.1, "stop", "program"))):
-        t = now - timedelta(days=i, hours=2)
+                                                 ("TSLA", 8, 248.4, 242.1, "stop", "program"),
+                                                 ("NVDA", 20, 171.3, 168.2, "stop", "program"),
+                                                 ("NVDA", 25, 166.0, 174.8, "target", "program"))):
+        t = now - timedelta(days=i * 2 + (i > 4) * 6, hours=2)
         st.db.execute("INSERT INTO trades(symbol,qty,entry,exit,pnl,reason,opened_at,closed_at,opened_by)"
                       " VALUES(?,?,?,?,?,?,?,?,?)", (sym, q, a, b, (b - a) * q, why, iso(t - timedelta(hours=3)), iso(t), by))
     st.db.commit()
@@ -169,6 +193,43 @@ def main():
                 delay, fn = steps[i]
                 root.after(delay, lambda: (fn(), run_step(i + 1)))
         run_step(0)
+    if args.chart_walk:
+        from PIL import ImageGrab
+        os.makedirs(args.chart_walk, exist_ok=True)
+
+        def grab(name):
+            root.update()
+            time.sleep(0.6)
+            root.update()
+            x, y = win.chart_frame.winfo_rootx(), win.chart_frame.winfo_rooty()
+            ImageGrab.grab((x, y, x + win.chart_frame.winfo_width(), y + win.chart_frame.winfo_height())).save(
+                os.path.join(args.chart_walk, name + ".png"))
+
+        def hover():
+            cv = win.chart
+            items = [i for i in cv.find_all() if any(t.startswith("mark") for t in cv.gettags(i))]
+            if items:
+                x1, y1, x2, y2 = cv.bbox(items[-1])
+                cv.event_generate("<Motion>", x=(x1 + x2) // 2, y=(y1 + y2) // 2 + 2, warp=False)
+            print("[CHART] marks:", len(items), "tip:", bool(cv.find_withtag("tip")), flush=True)
+
+        def flip(var):
+            var.set(not var.get())
+            win.toggle_chart()
+
+        steps = [(5000, lambda: (root.attributes("-topmost", True), hover())), (300, lambda: grab("1-hover")),
+                 (200, lambda: flip(win.ind_var)), (300, lambda: grab("2-no-indicators")),
+                 (200, lambda: (flip(win.ind_var), flip(win.marks_var))), (300, lambda: grab("3-no-marks")),
+                 (200, lambda: (flip(win.marks_var), win.set_chart_tf("1h"))), (2500, lambda: grab("4-h1")),
+                 (200, lambda: win.set_chart_tf("1mo")), (2500, lambda: grab("5-mn")),
+                 (200, lambda: print("[CHART] prefs:", open(win.prefs_path, encoding="utf-8").read(), flush=True)),
+                 (200, win.quit)]
+
+        def run_chart(i):
+            if i < len(steps):
+                delay, fn = steps[i]
+                root.after(delay, lambda: (fn(), run_chart(i + 1)))
+        run_chart(0)
     if args.shot:
         def shot():
             from PIL import ImageGrab

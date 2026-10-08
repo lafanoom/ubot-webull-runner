@@ -62,7 +62,12 @@ The computer must stay on while you want it to trade.
   every position at market, cancels the stops at Webull and does nothing more; when
   the market is closed the sale waits for the open). The mode is kept across restarts.
 - **Money**: account value, today's P/L, 30-day results, money in use against your cap.
-- **Middle**: the chart of the selected ticker with its stop/entry/target, or
+- **Middle**: the chart of the selected ticker with its stop/entry/target, at any bar
+  size from 1 minute to 1 month (it starts at the size the program decides on). Two
+  switches, both remembered: **Indicators** draws the lines the program's rules read
+  (on the price, or in a small pane under it), worked out from the current inputs;
+  **Trades** puts an arrow where the program bought and sold (hover for the details),
+  with a dotted line between the two ends of a closed trade. Or
   **Trading settings**: tickers, money limits, the program's inputs, mode, what the
   close button does, language, and the Webull keys (new keys are tested before they
   replace the old ones). Saving writes `webull.toml` and takes effect at once -
@@ -84,6 +89,10 @@ or red, which mean money), panels to hide, up to three extra figures in the watc
 list (`ui_values()`), and up to four buttons of its own (`on_button()`), which still
 order only through the runner and its rules. Anything else in `UI` is refused and the
 standard window is shown.
+
+The indicator lines come from the strategy's `PLOT` list (see `ubot_runner/plot.py`):
+moving averages, Bollinger bands, Donchian channels, RSI, MACD, ATR, or a line of its
+own from `plot()`. A period may name an input, so the line follows the settings.
 
 Files next to the program: `webull.toml` (your settings and keys - keep it private),
 `<name>.db` (memory across restarts), `<name>.log`, `webull-token/` (Webull's login

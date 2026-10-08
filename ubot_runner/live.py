@@ -15,7 +15,10 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from . import clock
+from .broker import CHART_SIZES, DAILY_UP
+from .plot import plot_of, series, warmup
 from .state import iso
+from .strategy import Bars
 from .ui import ui_of
 
 log = logging.getLogger("ubot")
@@ -53,6 +56,9 @@ class Live:
         self.thread = None
         self.poll = poll_seconds
         self.ui = ui_of(engine.strategy)
+        self.plot = plot_of(engine.strategy)
+        bar = getattr(engine.strategy, "BAR", "1d")
+        self.chart_tf = bar if bar in CHART_SIZES else "1d"
 
     # -- the window's side -------------------------------------------------
     def ask(self, name, *args, wait=False, timeout=60):
@@ -147,6 +153,13 @@ class Live:
         self.load_chart(symbol, now, force=True)
         return ""
 
+    def do_chart_tf(self, now, tf):
+        if tf not in CHART_SIZES:
+            return "unknown bar size"
+        self.chart_tf = tf
+        self.load_chart(self.selected, now, force=True)
+        return ""
+
     def do_save(self, now, cfg):
         """New settings: write the file first, then use them - at once, held positions included."""
         old = set(self.eng.cfg.symbols)
@@ -175,18 +188,80 @@ class Live:
         return ""
 
     # -- what the window reads -------------------------------------------------
+    CHART_BARS = 120                      # bars on screen
+    CHART_EVERY = {"1m": 30, "1d": 300, "1w": 600, "1mo": 600}   # seconds between reloads (default 60)
+
     def load_chart(self, symbol, now, force=False):
+        """The chart of one symbol at the chosen bar size, with the strategy's indicator lines
+        worked out over extra bars loaded before the shown ones (one call)."""
         if not symbol:
             return
+        tf = self.chart_tf
         c = self.chart.get(symbol)
-        if c and not force and (now - c["at"]).total_seconds() < 60:
+        if c and not force and c["tf"] == tf and                 (now - c["at"]).total_seconds() < self.CHART_EVERY.get(tf, 60):
             return
-        bars = self.eng.broker.bars(symbol, "5m", 90) or []
-        day = clock.et_date(now) if clock.is_trading_day(clock.et_date(now)) else None
-        today = [b for b in bars if day and clock.et_date(b.time) == day]
-        shown = today or bars[-78:]
-        self.chart[symbol] = {"at": now, "bars": [(iso(b.time), b.close) for b in shown],
-                              "today": bool(today), "day": clock.et_date(shown[-1].time).isoformat() if shown else ""}
+        inputs = dict(self.eng.cfg.inputs)
+        extra = warmup(self.plot, inputs)
+        bars = self.eng.broker.bars(symbol, tf, self.CHART_BARS + extra) or []
+        shown = bars[-self.CHART_BARS:]
+        cut = len(bars) - len(shown)
+        lines = []
+        if self.plot and shown:
+            custom = {}
+            if any(p["kind"] == "line" for p in self.plot):
+                try:
+                    custom = self.eng.strategy.plot(self.eng.ctx, symbol, Bars(bars)) or {}
+                except Exception:
+                    log.exception("the program's plot() failed for %s", symbol)
+            for n, item in enumerate(self.plot):
+                try:
+                    for label, pane, vals, levels in series(item, bars, inputs, custom if isinstance(custom, dict) else {}):
+                        lines.append({"label": label, "pane": pane, "values": vals[cut:], "levels": levels,
+                                      "group": n, "kind": item["kind"]})
+                except Exception:
+                    log.exception("could not work out %s for the chart", item.get("kind"))
+        self.chart[symbol] = {"at": now, "tf": tf, "bars": [(iso(b.time), b.close) for b in shown],
+                              "plots": lines}
+
+    def chart_marks(self, symbol, now):
+        """Where this program bought and sold the symbol, on the shown bars: each mark sits on the
+        bar the order filled in (the last bar that started at or before it)."""
+        c = self.chart.get(symbol)
+        if not c or not c["bars"]:
+            return []
+        times = [datetime.fromisoformat(t) for t, _ in c["bars"]]
+        first = times[0]
+
+        def at(t):
+            try:
+                t = datetime.fromisoformat(t)
+            except (TypeError, ValueError):
+                return None
+            if t < first:
+                return None
+            i = len(times) - 1
+            while i > 0 and times[i] > t:
+                i -= 1
+            return i
+
+        out = []
+        for t in self.eng.state.trades(iso(first - timedelta(days=40 if c["tf"] in DAILY_UP else 1))):
+            if t["symbol"] != symbol:
+                continue
+            a, b = at(t["opened_at"]), at(t["closed_at"])
+            if b is None:
+                continue
+            out.append({"side": "buy", "i": a, "px": t["entry"], "qty": t["qty"], "t": t["opened_at"],
+                        "by": t["opened_by"]})
+            out.append({"side": "sell", "i": b, "px": t["exit"], "qty": t["qty"], "t": t["closed_at"],
+                        "pnl": t["pnl"], "reason": t["reason"], "from": a, "from_px": t["entry"]})
+        p = self.eng.state.position(symbol)
+        if p:
+            i = at(p["opened_at"])
+            if i is not None:
+                out.append({"side": "buy", "i": i, "px": p["entry"], "qty": p["qty"], "t": p["opened_at"],
+                            "by": p["opened_by"]})
+        return [m for m in out if m["i"] is not None]
 
     SPARK_EVERY = 300                     # seconds between refreshes of one symbol's small line
 
@@ -268,7 +343,10 @@ class Live:
             "quotes": dict(self.quotes), "selected": self.selected,
             "sparks": {s: v[1] for s, v in self.sparks.items()},
             "chart": self.chart.get(self.selected, {}).get("bars", []),
-            "chart_day": "" if self.chart.get(self.selected, {}).get("today") else self.chart.get(self.selected, {}).get("day", ""),
+            "chart_tf": self.chart.get(self.selected, {}).get("tf", self.chart_tf),
+            "plots": self.chart.get(self.selected, {}).get("plots", []),
+            "has_plot": bool(self.plot),
+            "marks": self.chart_marks(self.selected, now),
             "values": values, "log": list(self.ring.lines)[-120:], "status": eng.status,
         }
         with self.lock:

@@ -443,7 +443,7 @@ class Build(unittest.TestCase):
                                capture_output=True, text=True, cwd=d, timeout=60)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("[ACCEPT] entry KO", r.stdout)
-            self.assertIn("runner 0.2.0", r.stdout)
+            self.assertIn("runner 0.3.0", r.stdout)
             res = json.loads([ln for ln in r.stdout.splitlines() if ln.startswith("[RESULT] ")][0][9:])
             self.assertGreater(res["trades"], 0)
             r0 = subprocess.run([sys.executable, out, "simulate", "--bars", os.path.join(d, "b.json"),

@@ -27,6 +27,7 @@ from datetime import datetime
 from tkinter import ttk
 
 from . import clock
+from .broker import CHART_SIZES, DAILY_UP
 from .config import ConfigError, parse
 from . import shapes as sh
 from .shapes import px as P
@@ -38,6 +39,10 @@ TOPBG = "#0F1522"
 INK, INK2, INK3, INK4, SOFT = "#E6EAF2", "#AEB7C7", "#8B95A7", "#5E6A80", "#C9D1DF"
 UP, DOWN, UP2, DOWN2, AMBER, VIOLET = "#22C55E", "#F43F5E", "#4ADE80", "#FB7185", "#F59E0B", "#8B5CF6"
 ACCENT, ACCENT2 = "#22D3EE", "#67E8F9"
+# indicator lines: never green or red (those mean money on this screen)
+LINE_COLORS = ("#F59E0B", "#C084FC", "#38BDF8", "#F472B6", "#E2E8F0", "#FDE68A")
+TF_LABEL = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "2h": "H2", "4h": "H4",
+            "1d": "D1", "1w": "W1", "1mo": "MN"}
 GHOST_LINE, FIELD_LINE = "#3A4458", "#2A3448"
 KEY = "#010203"                 # the colour that is see-through on borderless dialogs
 
@@ -320,6 +325,12 @@ class Window:
         for side, key in (("left", "split"), ("right", "split_right")):
             v = self.prefs.get(key)
             self.split_frac[side] = min(0.9, max(0.1, v)) if isinstance(v, (int, float)) else self.SPLIT_DEFAULT[side]
+        # the chart: bar size (the strategy's own until the customer picks another), lines, trade marks
+        bar = getattr(strategy, "BAR", "1d")
+        tf = self.prefs.get("chart_tf")
+        self.chart_tf = tf if tf in CHART_SIZES else bar if bar in CHART_SIZES else "1d"
+        self.chart_ind = self.prefs.get("chart_ind") is not False
+        self.chart_marks = self.prefs.get("chart_marks") is not False
         self.tab = "open"
         self.dirty = False
         self.form = {}
@@ -595,6 +606,7 @@ class Window:
             self.save_cfg(cfg, self.cfg_path)
         self.cfg = cfg
         self.live = self.make_live(cfg, broker)
+        self.live.ask("chart_tf", self.chart_tf)
         self.main_screen()
 
     # -- the main screen -------------------------------------------------------
@@ -881,6 +893,18 @@ class Window:
         self.chart_chg.pack(side="left")
         self.legend = tk.Canvas(self.chart_head, bg=PANEL, highlightthickness=0, bd=0, height=P(26), width=P(10))
         self.legend.pack(side="right")
+        tools = tk.Frame(self.chart_frame, bg=PANEL)
+        tools.pack(fill="x", padx=P(10), pady=(P(6), 0))
+        self.tf_seg = self.segmented(tools, [(tf, TF_LABEL[tf]) for tf in CHART_SIZES], self.chart_tf,
+                                     self.set_chart_tf, height=28, size=12, padx=7)
+        self.tf_seg.pack(side="left")
+        self.marks_var = tk.BooleanVar(value=self.chart_marks)
+        self.ind_var = tk.BooleanVar(value=self.chart_ind)
+        self.check(tools, self.t("c_marks"), self.marks_var, self.toggle_chart, size=12).pack(side="right")
+        self.check(tools, self.t("c_ind"), self.ind_var, self.toggle_chart, size=12).pack(side="right", padx=(0, P(14)))
+        bar = getattr(self.strategy, "BAR", "")
+        if bar in TF_LABEL:
+            self.label(tools, self.t("c_sys_tf", tf=TF_LABEL[bar]), 11, INK4).pack(side="left", padx=(P(10), 0))
         self.chart = tk.Canvas(self.chart_frame, bg=PANEL, highlightthickness=0, height=P(120))
         self.chart.pack(fill="both", expand=True, padx=P(10), pady=(P(6), P(8)))
         self.chart.bind("<Configure>", lambda e: self.draw_chart())
@@ -888,6 +912,18 @@ class Window:
         self.settings_frame.place(x=0, y=0, relwidth=1, relheight=1)
         self.build_settings(self.settings_frame)
         self.set_view(self.view)
+
+    def set_chart_tf(self, tf):
+        self.chart_tf = tf
+        self.tf_seg.set(tf)
+        self.save_prefs(chart_tf=tf)
+        if self.live:
+            self.live.ask("chart_tf", tf)
+
+    def toggle_chart(self):
+        self.chart_ind, self.chart_marks = bool(self.ind_var.get()), bool(self.marks_var.get())
+        self.save_prefs(chart_ind=self.chart_ind, chart_marks=self.chart_marks)
+        self.draw_chart()
 
     def set_view(self, view):
         # both views are built once and share one grid cell of fixed size: switching hides one and
@@ -1839,7 +1875,6 @@ class Window:
         self.chart_px.config(text=num(q[0]))
         self.chart_chg.config(text="" if q[1] is None else f"{q[1]:+.2f}%", fg=tone2(q[1]))
         p = next((x for x in s["positions"] if x["symbol"] == sym), None)
-        period = self.t("today_5m") if not s.get("chart_day") else self.t("day_5m", d=s["chart_day"])
         cv = self.legend
         cv.delete("all")
         items = []
@@ -1847,8 +1882,7 @@ class Window:
             items = [(UP, (5, 3), f"{self.t('c_target')} {num(p['target'])}"), ("#94A3B8", (2, 3), f"{self.t('c_buy')} {num(p['entry'])}"),
                      (DOWN, (5, 3), f"{self.t('c_stop')} {num(p['stop'])}")]
         f12 = F(self.f(12))
-        chip_w = f12.measure(period) + P(18)
-        total = chip_w + sum(P(18) + P(6) + f12.measure(t) + P(14) for _, _, t in items) + P(6)
+        total = sum(P(18) + P(6) + f12.measure(t) + P(14) for _, _, t in items) + P(6)
         cv.configure(width=total)
         x = 0
         cy = P(13)
@@ -1862,18 +1896,17 @@ class Window:
             x += P(18) + P(6)
             cv.create_text(x, cy, text=t, anchor="w", fill=INK2, font=self.f(12))
             x += f12.measure(t) + P(14)
-        sh.round_rect(cv, x, cy - P(11), x + chip_w, cy + P(11), P(6), fill="#1E293B", outline="")
-        cv.create_text(x + chip_w / 2, cy, text=period, fill=INK, font=self.f(12))
-        self._chart = (s["chart"], p)
+        self._chart = (s["chart"], p, s.get("plots", []), s.get("marks", []), s.get("chart_tf"),
+                       s.get("has_plot", False))
 
     def draw_chart(self):
         if not hasattr(self, "_chart") or not self.chart.winfo_exists():
             return
         cv = self.chart
-        bars, p = self._chart
+        bars, p, plots, marks, tf, has_plot = self._chart
         w, h = cv.winfo_width(), cv.winfo_height()
-        key = (repr(self._chart), w, h, self.lang)
-        if getattr(self, "_chart_drawn", None) == key:  # the smooth line is an image: only redraw on change
+        key = (repr(self._chart), w, h, self.lang, self.chart_ind, self.chart_marks)
+        if getattr(self, "_chart_drawn", None) == key:  # the smooth lines are images: only redraw on change
             return
         self._chart_drawn = key
         cv.delete("all")
@@ -1882,33 +1915,154 @@ class Window:
         if len(bars) < 2:
             cv.create_text(w / 2, h / 2, text=self.t("no_bars"), fill=INK3, font=self.f(13))
             return
+        n = len(bars)
+        X = lambda i: i * w / (n - 1)
         vals = [c for _, c in bars]
+        lines = plots if self.chart_ind else []
+        on_price = [l for l in lines if l["pane"] == "price"]
+        groups = []                                      # the panes under the price, one per PLOT item
+        for l in lines:
+            if l["pane"] == "lower":
+                if not groups or groups[-1][0] != l["group"]:
+                    groups.append((l["group"], []))
+                groups[-1][1].append(l)
+        axis = P(24)
+        pane_h = max(P(56), (h - axis) * 0.22) if groups else 0
+        if (h - axis) - pane_h * len(groups) < P(90):    # too short: the price comes first
+            groups, pane_h = [], 0
+        base = h - axis - pane_h * len(groups)
         lo, hi = min(vals), max(vals)
+        for l in on_price:
+            got = [v for v in l["values"] if v is not None]
+            if got:
+                lo, hi = min(lo, min(got)), max(hi, max(got))
         if p:
             lo = min([lo] + [x for x in (p["stop"], p["entry"]) if x])
             hi = max([hi] + [x for x in (p["target"], p["entry"]) if x])
         pad = (hi - lo) * 0.06 or 1
         lo, hi = lo - pad, hi + pad
-        base = h - P(24)
-        y = lambda v: P(8) + (hi - v) / (hi - lo) * (base - P(8))
+        top = P(8)
+        y = lambda v: top + (hi - v) / (hi - lo) * (base - top)
         for i in range(1, 4):
-            cv.create_line(0, i * base / 4, w, i * base / 4, fill="#1C2435")
+            cv.create_line(0, top + i * (base - top) / 4, w, top + i * (base - top) / 4, fill="#1C2435")
         color = UP if vals[-1] >= vals[0] else DOWN
-        pts = []
-        for i, v in enumerate(vals):
-            pts += [i * w / (len(vals) - 1), y(v)]
-        self.fill_under(cv, list(zip(pts[0::2], pts[1::2])), base, color, PANEL, step=3, strength=0.35, tags="")
-        sh.smooth_line(cv, list(zip(pts[0::2], pts[1::2])), max(2, P(2.2)), color)
+        pts = [(X(i), y(v)) for i, v in enumerate(vals)]
+        self.fill_under(cv, pts, base, color, PANEL, step=3, strength=0.35 if not on_price else 0.2, tags="")
+        sh.smooth_line(cv, pts, max(2, P(2.2)), color)
+        colors = {}
+        for l in lines:
+            colors.setdefault(l["group"], LINE_COLORS[len(colors) % len(LINE_COLORS)])
+        for l in on_price:
+            self.plot_line(cv, l["values"], X, y, colors[l["group"]], thin=l["label"].endswith((" +", " -")))
         if p:
             for v, c, dash in ((p["target"], UP, (6, 5)), (p["entry"], "#94A3B8", (2, 4)), (p["stop"], DOWN, (6, 5))):
                 if v:
                     cv.create_line(0, y(v), w, y(v), fill=c, dash=dash, width=1)
+        # the names of the lines on the price, top left, with their last value
+        x = P(4)
+        if self.chart_ind and not has_plot:
+            cv.create_text(x, P(10), text=self.t("c_no_ind"), anchor="w", fill=INK4, font=self.f(11))
+        for l in on_price:
+            if l["label"].endswith((" +", " -")):
+                continue
+            last = next((v for v in reversed(l["values"]) if v is not None), None)
+            t = l["label"] + ("" if last is None else f" {num(last)}")
+            item = cv.create_text(x, P(10), text=t, anchor="w", fill=colors[l["group"]], font=self.mono(11))
+            x1, y1, x2, y2 = cv.bbox(item)
+            back = cv.create_rectangle(x1 - P(3), y1 - 1, x2 + P(3), y2 + 1, fill=PANEL, outline="")
+            cv.tag_lower(back, item)
+            x += F(self.mono(11)).measure(t) + P(14)
+        if self.chart_marks:
+            self.draw_marks(cv, marks, X, y, w)
+        # panes under the price
+        for k, (g, ls) in enumerate(groups):
+            y1 = base + k * pane_h + P(6)
+            y2 = base + (k + 1) * pane_h - P(2)
+            cv.create_line(0, y1 - P(3), w, y1 - P(3), fill=LINE)
+            got = [v for l in ls for v in l["values"] if v is not None] + list(ls[0]["levels"])
+            if ls[0]["kind"] == "rsi":
+                plo, phi = 0.0, 100.0
+            elif got:
+                plo, phi = min(got), max(got)
+                pp = (phi - plo) * 0.08 or 1
+                plo, phi = plo - pp, phi + pp
+            else:
+                continue
+            yy = lambda v, a=y1 + P(14), b=y2: a + (phi - v) / (phi - plo) * (b - a)
+            for lv in ls[0]["levels"]:
+                cv.create_line(0, yy(lv), w, yy(lv), fill="#2A3448", dash=(3, 4))
+                cv.create_text(w - P(2), yy(lv), text=num(lv), anchor="se", fill=INK4, font=self.mono(10))
+            for j, l in enumerate(ls):
+                c = colors[g] if j == 0 else INK3
+                self.plot_line(cv, l["values"], X, yy, c, thin=j > 0)
+            last = next((v for v in reversed(ls[0]["values"]) if v is not None), None)
+            cv.create_text(P(4), y1 + P(4), text=ls[0]["label"] + ("" if last is None else f" {num(last)}"),
+                           anchor="w", fill=colors[g], font=self.mono(11))
+        # the time under it all
+        times = [datetime.fromisoformat(t).astimezone(clock.ET) for t, _ in bars]
+        if tf == "1mo":
+            fmt = "%m/%Y"
+        elif tf == "1w":
+            fmt = "%d/%m/%y"
+        elif tf in DAILY_UP:
+            fmt = "%d/%m"
+        else:
+            fmt = "%H:%M" if times[0].date() == times[-1].date() else "%d/%m %H:%M"
         for frac in (0, 0.25, 0.5, 0.75, 1):
-            i = int(round((len(bars) - 1) * frac))
-            t = datetime.fromisoformat(bars[i][0]).astimezone(clock.ET)
+            i = int(round((n - 1) * frac))
             anchor = "w" if frac == 0 else "e" if frac == 1 else "center"
-            cv.create_text(i * w / (len(bars) - 1), h - P(8), text=t.strftime("%H:%M"), anchor=anchor,
-                           fill=INK4, font=self.mono(11))
+            cv.create_text(X(i), h - P(8), text=times[i].strftime(fmt), anchor=anchor, fill=INK4, font=self.mono(11))
+
+    def plot_line(self, cv, values, X, Y, color, thin=False):
+        """One indicator line, in pieces where it has values (it starts once the indicator is ready)."""
+        run = []
+        for i, v in enumerate(list(values) + [None]):
+            if v is None:
+                if len(run) > 1:
+                    sh.smooth_line(cv, run, max(1, P(1.1 if thin else 1.6)), sh.mix(PANEL, color, 0.6) if thin else color)
+                run = []
+            else:
+                run.append((X(i), Y(v)))
+
+    def draw_marks(self, cv, marks, X, Y, w):
+        """Arrows where the program bought (under the price, pointing up) and sold (over it, pointing
+        down), a dotted line between the two ends of a closed trade, and a note on hover."""
+        s = P(7)
+        for m in marks:
+            if m["side"] == "sell" and m.get("from") is not None:
+                c = UP if (m.get("pnl") or 0) > 0 else DOWN if (m.get("pnl") or 0) < 0 else INK3
+                cv.create_line(X(m["from"]), Y(m["from_px"]), X(m["i"]), Y(m["px"]), fill=sh.mix(PANEL, c, 0.7),
+                               dash=(2, 3))
+        for k, m in enumerate(marks):
+            x, yv = X(m["i"]), Y(m["px"])
+            tag = f"mark{k}"
+            if m["side"] == "buy":
+                c = self.accent
+                pts = (x, yv + P(3), x - s, yv + P(3) + s * 1.4, x + s, yv + P(3) + s * 1.4)
+                note = self.t("c_mark_buy", q=m["qty"], p=num(m["px"]))
+            else:
+                pnl = m.get("pnl") or 0
+                c = UP if pnl > 0 else DOWN if pnl < 0 else INK3
+                pts = (x, yv - P(3), x - s, yv - P(3) - s * 1.4, x + s, yv - P(3) - s * 1.4)
+                note = self.t("c_mark_sell", q=m["qty"], p=num(m["px"]), pl=money(pnl, True),
+                              why=why(self.lang, m.get("reason", "")))
+            try:
+                when = datetime.fromisoformat(m["t"]).astimezone().strftime("%d/%m %H:%M")
+            except (TypeError, ValueError):
+                when = ""
+            cv.create_polygon(pts, fill=c, outline=PANEL, width=1, tags=(tag,))
+            cv.tag_bind(tag, "<Enter>", lambda e, t=f"{note} · {when}", x=x, y=yv: self.chart_tip(t, x, y, w))
+            cv.tag_bind(tag, "<Leave>", lambda e: self.chart.delete("tip"))
+
+    def chart_tip(self, txt, x, y, w):
+        cv = self.chart
+        cv.delete("tip")
+        f = F(self.f(12))
+        tw, th = f.measure(txt) + P(16), f.metrics("linespace") + P(10)
+        x1 = min(max(P(2), x - tw / 2), w - tw - P(2))
+        y1 = y - th - P(18) if y - th - P(18) > P(2) else y + P(18)
+        sh.round_rect(cv, x1, y1, x1 + tw, y1 + th, P(6), fill="#1E293B", outline=LINE, tags="tip")
+        cv.create_text(x1 + P(8), y1 + th / 2, text=txt, anchor="w", fill=INK, font=self.f(12), tags="tip")
 
     def paint_tables(self, s):
         rows = []
