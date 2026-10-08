@@ -180,6 +180,114 @@ def ring_image(cv, r, width, frac, color, track, bg_at, ox, oy):
     return img
 
 
+_CORNER_CACHE = {}
+
+
+def _corner_image(cv, n, r, lw, which, bg, outline, fill_at, ox, oy):
+    """One n x n corner of a rounded rectangle, anti-aliased. `which` is tl/tr/bl/br; (ox, oy) is
+    the image's top-left in canvas pixels; fill_at(x, y) gives the fill colour there."""
+    samples = [(fill_at(ox + i, oy + j)) for j in (0, n - 1) for i in (0, n - 1)]
+    key = (n, r, lw, which, bg, outline, tuple(samples))
+    img = _CORNER_CACHE.get(key)
+    if img is not None:
+        return img
+    # the arc centre, in image coordinates
+    cx = r if which in ("tl", "bl") else n - r
+    cy = r if which in ("tl", "tr") else n - r
+    sx_out = -1 if which in ("tl", "bl") else 1
+    sy_out = -1 if which in ("tl", "tr") else 1
+    rin = max(0.0, r - lw)
+    b = _rgb(bg)
+    o = _rgb(outline) if outline else None
+    step = 1.0 / _SS
+    tot = _SS * _SS
+    rows = []
+    for j in range(n):
+        row = []
+        for i in range(n):
+            f = _rgb(fill_at(ox + i, oy + j))
+            c_out = c_in = 0
+            for sy in range(_SS):
+                y = j + (sy + 0.5) * step
+                dy = max(0.0, (y - cy) * sy_out)
+                for sx in range(_SS):
+                    x = i + (sx + 0.5) * step
+                    dx = max(0.0, (x - cx) * sx_out)
+                    d = math.hypot(dx, dy)
+                    if d <= r:
+                        c_out += 1
+                        if d <= rin:
+                            c_in += 1
+            a_out, a_in = c_out / tot, c_in / tot
+            edge = o or f
+            px_ = [round(b[k] * (1 - a_out) + edge[k] * (a_out - a_in) + f[k] * a_in) for k in range(3)]
+            row.append("#%02X%02X%02X" % tuple(px_))
+        rows.append("{" + " ".join(row) + "}")
+    img = tk.PhotoImage(master=cv, width=n, height=n)
+    img.put(" ".join(rows))
+    if len(_CORNER_CACHE) > 512:
+        _CORNER_CACHE.clear()
+    _CORNER_CACHE[key] = img
+    return img
+
+
+def smooth_rect(cv, x1, y1, x2, y2, r, fill, bg, outline="", width=1, fill_at=None, vary="x", tags=()):
+    """A rounded rectangle whose corners are anti-aliased (tkinter's own are stepped). The four
+    corners are small supersampled images blended into `bg`, the solid colour underneath; the
+    rest is plain rectangles. `fill_at(x, y)` gives a varying fill (gradients); else `fill`."""
+    x1, y1, x2, y2 = int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))
+    w, h = x2 - x1, y2 - y1
+    if w < 2 or h < 2:
+        return
+    r = max(0.0, min(float(r), w / 2, h / 2))
+    n = int(math.ceil(r))
+    lw = max(1, int(round(width))) if outline else 0
+    fa = fill_at or (lambda x, y: fill)
+    if fill_at is None:
+        cv.create_rectangle(x1 + n, y1, x2 - n, y2, fill=fill, outline="", tags=tags)
+        if h - 2 * n > 0:
+            cv.create_rectangle(x1, y1 + n, x2, y2 - n, fill=fill, outline="", tags=tags)
+    elif vary == "y":                       # fill changes down the shape only: one line per row run
+        y = y1
+        while y < y2:
+            c = fa(x1 + n, y)
+            e = y + 1
+            while e < y2 and fa(x1 + n, e) == c:
+                e += 1
+            if y < y1 + n or e > y2 - n:     # rows that touch a corner: per row, inside the corners
+                for yy in range(y, e):
+                    in_corner = yy < y1 + n or yy >= y2 - n
+                    xa, xb = (x1 + n, x2 - n) if in_corner else (x1, x2)
+                    if xb > xa:
+                        cv.create_line(xa, yy, xb, yy, fill=c, tags=tags)
+            else:
+                cv.create_rectangle(x1, y, x2, e, fill=c, outline="", tags=tags)
+            y = e
+    else:
+        for x in range(x1, x2):
+            ya, yb = (y1, y2) if x1 + n <= x < x2 - n else (y1 + n, y2 - n)
+            if yb <= ya:
+                continue
+            seg = ya
+            while seg < yb:                 # vertical runs of one colour
+                c = fa(x, seg)
+                e = seg + 1
+                while e < yb and fa(x, e) == c:
+                    e += 1
+                cv.create_line(x, seg, x, e, fill=c, tags=tags)
+                seg = e
+    if lw:
+        cv.create_rectangle(x1 + n, y1, x2 - n, y1 + lw, fill=outline, outline="", tags=tags)
+        cv.create_rectangle(x1 + n, y2 - lw, x2 - n, y2, fill=outline, outline="", tags=tags)
+        if h - 2 * n > 0:
+            cv.create_rectangle(x1, y1 + n, x1 + lw, y2 - n, fill=outline, outline="", tags=tags)
+            cv.create_rectangle(x2 - lw, y1 + n, x2, y2 - n, fill=outline, outline="", tags=tags)
+    if n:
+        for which, ox, oy in (("tl", x1, y1), ("tr", x2 - n, y1), ("bl", x1, y2 - n), ("br", x2 - n, y2 - n)):
+            img = _corner_image(cv, n, r, lw, which, bg, outline or None, fa, ox, oy)
+            cv.create_image(ox, oy, image=img, anchor="nw", tags=tags)
+
+
 def ring(cv, cx, cy, r, width, frac, color, track, tags=(), bg_at=None):
     """A progress ring: `frac` of the circle in `color`, the rest in `track`. Starts at 12 o'clock.
     With `bg_at` (canvas x, y -> colour underneath) it is drawn anti-aliased as an image."""
@@ -292,20 +400,17 @@ class Box(tk.Frame):
         w, h = cv.winfo_width(), cv.winfo_height()
         if w < 4 or h < 4:
             return
-        o = self.lw / 2 + 0.5
+        bg = cv["bg"]
         if self.tint:
-            round_rect(cv, o, o, w - o, h - o, self.radius, fill=self.fill, outline="")
             band = min(self.band, h - 2)
             n = max(1, band)
-            for y in range(1, band, 2):
-                d = y
-                dx = _inset(self.radius, d)
-                cv.create_line(1 + dx, y, w - 1 - dx, y, fill=mix(self.tint, self.fill, y / n), width=2)
-            if self.outline:
-                round_rect(cv, o, o, w - o, h - o, self.radius, fill="", outline=self.outline, width=self.lw)
+            tint, fill = self.tint, self.fill
+
+            def at(x, y):
+                return mix(tint, fill, (y - (y % 2) + 1) / n) if y < band else fill
+            smooth_rect(cv, 0, 0, w, h, self.radius, fill, bg, outline=self.outline, width=self.lw, fill_at=at, vary="y")
         else:
-            round_rect(cv, o, o, w - o, h - o, self.radius, fill=self.fill,
-                       outline=self.outline or self.fill, width=self.lw)
+            smooth_rect(cv, 0, 0, w, h, self.radius, self.fill, bg, outline=self.outline, width=self.lw)
         if self.title:
             padx = self.inner.pack_info().get("padx", self.inset)
             if isinstance(padx, tuple):
@@ -390,14 +495,14 @@ class Button(tk.Canvas):
             a, b = self._o["gradient"]
             if hot:
                 a, b = _lighter(a), _lighter(b)
-            gradient_rect(self, 0, 0, w, h, self.radius, a, b, vertical=False)
+            smooth_rect(self, 0, 0, w, h, self.radius, a, self["bg"],
+                        fill_at=lambda x, y: mix(a, b, x / max(1, w - 1)))
         else:
             if hot:
                 fill = self.hover or _lighter(fill)
-            outline = self._o["outline"] or fill
-            if fill == self["bg"] and not self._o["outline"]:
-                outline = ""
-            round_rect(self, 0.5, 0.5, w - 0.5, h - 0.5, self.radius, fill=fill, outline=outline)
+            outline = self._o["outline"]
+            if fill != self["bg"] or outline:
+                smooth_rect(self, 0, 0, w, h, self.radius, fill, self["bg"], outline=outline)
         fg = self._o["fg"] if on else self._o["disabledforeground"]
         text = self._o["text"]
         tw = self.font.measure(text) if text else 0

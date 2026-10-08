@@ -78,6 +78,18 @@ def dark_title(win):
         pass
 
 
+OFF = -30000                     # where a hidden view waits (see slide)
+
+
+def slide(show, hide):
+    """Show one of two views placed in the same spot and park the other off-screen. Both keep their
+    size, so nothing inside is re-laid out or redrawn: the switch is one move and one paint.
+    (Re-packing or un-mapping redrew every panel - a judder; raising one left the other on screen.)"""
+    hide.place_configure(x=OFF)
+    show.place_configure(x=0)
+    show.tkraise()
+
+
 def money(v, sign=False):
     if v is None:
         return "—"
@@ -742,7 +754,10 @@ class Window:
         self.seg = self.segmented(bar, tabs, self.view, self.set_view)
         self.seg.pack(side="left")
         self.dirty_lbl = self.pill(bar, "", "#FCD34D", dot=AMBER, size=12)
-        self.chart_frame = tk.Frame(frame, bg=PANEL)
+        stack = tk.Frame(frame, bg=PANEL)
+        stack.pack(fill="both", expand=True)
+        self.chart_frame = tk.Frame(stack, bg=PANEL)
+        self.chart_frame.place(x=0, y=0, relwidth=1, relheight=1)
         self.chart_head = tk.Frame(self.chart_frame, bg=PANEL)
         self.chart_head.pack(fill="x", padx=P(10), pady=(P(2), 0))
         self.chart_title = self.label(self.chart_head, "", 20, INK, "bold")
@@ -756,17 +771,20 @@ class Window:
         self.chart = tk.Canvas(self.chart_frame, bg=PANEL, highlightthickness=0, height=P(120))
         self.chart.pack(fill="both", expand=True, padx=P(10), pady=(P(6), P(8)))
         self.chart.bind("<Configure>", lambda e: self.draw_chart())
-        self.settings_frame = tk.Frame(frame, bg=PANEL)
+        self.settings_frame = tk.Frame(stack, bg=PANEL)
+        self.settings_frame.place(x=0, y=0, relwidth=1, relheight=1)
         self.build_settings(self.settings_frame)
         self.set_view(self.view)
 
     def set_view(self, view):
+        # both views are built once and share one grid cell of fixed size: switching hides one and
+        # shows the other at the size it already had, so no panel is re-laid out or redrawn
+        # (re-packing them made every panel redraw - a judder)
         self.view = view
         self.seg.set(view)
-        self.split_rows()
-        self.chart_frame.pack_forget()
-        self.settings_frame.pack_forget()
-        (self.chart_frame if view == "chart" else self.settings_frame).pack(fill="both", expand=True)
+        show, hide = (self.chart_frame, self.settings_frame) if view == "chart" else \
+            (self.settings_frame, self.chart_frame)
+        slide(show, hide)
 
     def build_watch(self, b):
         if not self.shown("watch"):
@@ -821,6 +839,8 @@ class Window:
                        ("sell", self.t("h_sell"), 1, P(70), "e"), ("pl", self.t("h_pl"), 2, P(100), "e"),
                        ("why", self.t("h_why"), 2, P(120), "w"), ("by", self.t("h_by"), 1, P(80), "w")]
         self.tree_closed = Table(holder, self, cols_closed)
+        for tbl in (self.tree_open, self.tree_closed):
+            tbl.place(x=0, y=0, relwidth=1, relheight=1)
         self.set_tab("open")
         if self.shown("log"):
             right = self.card(b)
@@ -846,9 +866,8 @@ class Window:
         self.tab = tab
         for k, (tb, label) in self.tab_btn.items():
             tb.set(active=k == tab)
-        self.tree_open.pack_forget()
-        self.tree_closed.pack_forget()
-        (self.tree_open if tab == "open" else self.tree_closed).pack(fill="both", expand=True)
+        show, hide = (self.tree_open, self.tree_closed) if tab == "open" else (self.tree_closed, self.tree_open)
+        slide(show, hide)
         self.sell_btn.config(state="normal" if tab == "open" else "disabled")
 
     # -- trading settings ---------------------------------------------------
@@ -1591,26 +1610,31 @@ class Window:
         cv.create_line(*[c for p in pts for c in p], fill=color, width=width, tags=tags)
 
     def fill_under(self, cv, pts, base, color, bg, step=2, strength=0.4, tags="fg"):
-        """The fading fill under a line: columns that fade from the line's colour to the panel."""
+        """The fading fill under a line, from the line's colour at its highest point to the panel at
+        `base`. Drawn as horizontal bands, each one polygon clipped to the line - a few dozen canvas
+        items instead of thousands of 1px columns, which Tk had to repaint one by one every time the
+        chart came back on screen (the judder when switching views)."""
         if len(pts) < 2:
             return
         x0, xn = pts[0][0], pts[-1][0]
         top = min(p[1] for p in pts)
         span = max(1.0, base - top)
-        j = 0
-        x = x0
-        while x <= xn:
-            while j < len(pts) - 2 and pts[j + 1][0] < x:
-                j += 1
-            (ax, ay), (bx, by) = pts[j], pts[j + 1]
-            y = ay + (by - ay) * ((x - ax) / ((bx - ax) or 1))
-            n = 6
-            for k in range(n):
-                ya = y + (base - y) * k / n
-                yb = y + (base - y) * (k + 1) / n
-                t = strength * (1 - ((ya - top) / span))
-                cv.create_line(x, ya, x, yb, fill=sh.mix(bg, color, max(0.0, t)), width=step, tags=tags)
-            x += step
+        n = max(8, min(40, int(span / P(4))))
+        for k in range(n):
+            ya = top + span * k / n
+            yb = top + span * (k + 1) / n
+            t = strength * (1 - k / n)
+            poly = []
+            for i, (x, y) in enumerate(pts):
+                if i:                       # where the line crosses this band's edges, add the crossing
+                    px_, py_ = pts[i - 1]
+                    cross = [(px_ + (x - px_) * (edge - py_) / (y - py_), edge) for edge in (ya, yb)
+                             if (py_ - edge) * (y - edge) < 0]
+                    poly += sorted(cross)
+                poly.append((x, min(max(y, ya), yb)))
+            poly += [(xn, yb), (x0, yb)]
+            cv.create_polygon([c for p in poly for c in p], fill=sh.mix(bg, color, max(0.0, t)), outline="",
+                              tags=tags)
 
     def bars(self, cv, vals, x1, y1, x2, y2):
         if not vals:
