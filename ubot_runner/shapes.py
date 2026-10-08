@@ -183,11 +183,11 @@ def ring_image(cv, r, width, frac, color, track, bg_at, ox, oy):
 _CORNER_CACHE = {}
 
 
-def _corner_image(cv, n, r, lw, which, bg, outline, fill_at, ox, oy):
+def _corner_image(cv, n, r, lw, which, bg, outline, fill_at, ox, oy, outside=None):
     """One n x n corner of a rounded rectangle, anti-aliased. `which` is tl/tr/bl/br; (ox, oy) is
     the image's top-left in canvas pixels; fill_at(x, y) gives the fill colour there."""
     samples = [(fill_at(ox + i, oy + j)) for j in (0, n - 1) for i in (0, n - 1)]
-    key = (n, r, lw, which, bg, outline, tuple(samples))
+    key = (n, r, lw, which, bg, outline, tuple(samples), outside)
     img = _CORNER_CACHE.get(key)
     if img is not None:
         return img
@@ -218,6 +218,9 @@ def _corner_image(cv, n, r, lw, which, bg, outline, fill_at, ox, oy):
                         c_out += 1
                         if d <= rin:
                             c_in += 1
+            if outside and not c_out:      # wholly outside: the see-through colour, not a blend
+                row.append(outside)
+                continue
             a_out, a_in = c_out / tot, c_in / tot
             edge = o or f
             px_ = [round(b[k] * (1 - a_out) + edge[k] * (a_out - a_in) + f[k] * a_in) for k in range(3)]
@@ -231,7 +234,7 @@ def _corner_image(cv, n, r, lw, which, bg, outline, fill_at, ox, oy):
     return img
 
 
-def smooth_rect(cv, x1, y1, x2, y2, r, fill, bg, outline="", width=1, fill_at=None, vary="x", tags=()):
+def smooth_rect(cv, x1, y1, x2, y2, r, fill, bg, outline="", width=1, fill_at=None, vary="x", tags=(), outside=None):
     """A rounded rectangle whose corners are anti-aliased (tkinter's own are stepped). The four
     corners are small supersampled images blended into `bg`, the solid colour underneath; the
     rest is plain rectangles. `fill_at(x, y)` gives a varying fill (gradients); else `fill`."""
@@ -284,7 +287,7 @@ def smooth_rect(cv, x1, y1, x2, y2, r, fill, bg, outline="", width=1, fill_at=No
             cv.create_rectangle(x2 - lw, y1 + n, x2, y2 - n, fill=outline, outline="", tags=tags)
     if n:
         for which, ox, oy in (("tl", x1, y1), ("tr", x2 - n, y1), ("bl", x1, y2 - n), ("br", x2 - n, y2 - n)):
-            img = _corner_image(cv, n, r, lw, which, bg, outline or None, fa, ox, oy)
+            img = _corner_image(cv, n, r, lw, which, bg, outline or None, fa, ox, oy, outside)
             cv.create_image(ox, oy, image=img, anchor="nw", tags=tags)
 
 
@@ -608,8 +611,8 @@ class Tab(tk.Canvas):
             s = str(self.count)
             pw = self.pill_font.measure(s) + px(14)
             ph = self.pill_font.metrics("linespace") + px(2)
-            round_rect(self, x + px(8), h / 2 - px(3) - ph / 2, x + px(8) + pw, h / 2 - px(3) + ph / 2, ph / 2,
-                       fill=self.pill_bg, outline="")
+            smooth_rect(self, x + px(8), h / 2 - px(3) - ph / 2, x + px(8) + pw, h / 2 - px(3) + ph / 2, ph / 2,
+                        self.pill_bg, self["bg"])
             self.create_text(x + px(8) + pw / 2, h / 2 - px(3), text=s, fill=self.pill_fg, font=self.pill_font)
         if self.active:
             self.create_rectangle(0, h - px(2), w, h, fill=self.accent, outline="")
@@ -696,8 +699,8 @@ class Check(tk.Canvas):
         s = self.size
         on = bool(self.var.get())
         y = px(1) if self.wrap else max(0, (self.winfo_height() - s) / 2)
-        round_rect(self, 0.5, y + 0.5, s - 0.5, y + s - 0.5, px(4), fill=self.accent if on else self.boxbg,
-                   outline=self.accent if on else self.border)
+        smooth_rect(self, 0, y, s, y + s, px(4), self.accent if on else self.boxbg, self["bg"],
+                    outline=self.accent if on else self.border)
         if on:
             draw_icon(self, "check", s / 2, y + s / 2, s * 0.7, "#06101A", width=max(2, px(2)))
         self.create_text(s + px(10), y + (s / 2 if not self.wrap else 0) + (0 if not self.wrap else -px(1)),

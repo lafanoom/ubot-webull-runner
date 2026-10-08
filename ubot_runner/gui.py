@@ -78,7 +78,7 @@ def dark_title(win):
         pass
 
 
-OFF = -30000                     # where a hidden view waits (see slide)
+OFF = -30000                    # where a hidden view waits (see slide)
 
 
 def slide(show, hide):
@@ -1148,8 +1148,14 @@ class Window:
         top.transient(self.root)
         try:
             top.attributes("-transparentcolor", KEY)
+            seen = True
         except tk.TclError:
             top.configure(bg=PANEL)
+            seen = False
+        # what shows through around the card: the dimmed screen (mostly the dark page under the scrim)
+        # or, for a dropdown, the page itself. Corner edges blend into it, so they look smooth even
+        # though a see-through colour is all-or-nothing per pixel.
+        behind = sh.mix(BG, "#05080E", 0.72) if anchor is None else BG
         top.title(title)
         cv = tk.Canvas(top, bg=top["bg"], highlightthickness=0, bd=0)
         cv.pack()
@@ -1184,13 +1190,12 @@ class Window:
                 cv.configure(width=W, height=H)
                 cv.delete("card")
                 r = P(radius)
-                sh.round_rect(cv, 0.5, 0.5, W - 0.5, H - 0.5, r, fill=PANEL, outline=border, tags="card")
-                if tint:
-                    band = min(P(96), H - 2)
-                    for yy in range(1, band, 2):
-                        dx = sh._inset(r, yy)
-                        cv.create_line(1 + dx, yy, W - 1 - dx, yy, fill=sh.mix(tint, PANEL, yy / band), width=2, tags="card")
-                    sh.round_rect(cv, 0.5, 0.5, W - 0.5, H - 0.5, r, fill="", outline=border, tags="card")
+                band = min(P(96), H - 2)
+
+                def at(x, y):
+                    return sh.mix(tint, PANEL, (y - (y % 2) + 1) / band) if tint and y < band else PANEL
+                sh.smooth_rect(cv, 0, 0, W, H, r, PANEL, behind, outline=border, fill_at=at, vary="y",
+                               tags="card", outside=KEY if seen else None)
                 if title and anchor is None:
                     cv.create_text(pad, pad, text=title, anchor="nw", fill=INK, font=tf, tags="card")
                 if aside:
