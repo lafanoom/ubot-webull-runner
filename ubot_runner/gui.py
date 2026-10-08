@@ -311,6 +311,7 @@ class Window:
         self.tray = None
         self.snap_at = None
         self.view = "chart"
+        self.split_frac = 0.56     # the middle panels' share of the height they and the bottom ones split
         self.tab = "open"
         self.dirty = False
         self.form = {}
@@ -604,18 +605,70 @@ class Window:
         self.build_center(b)
         self.build_watch(b)
         self.build_bottom(b)
-        self.split_rows()
+        self.build_split(b)
         self.snap_at = None
 
+    SPLIT_MIN = (250, 150)          # the smallest the middle / bottom panels may be dragged to (unscaled px)
+
+    def build_split(self, b):
+        """The bar between the middle panels (chart, watch list) and the bottom ones (orders, log):
+        drag it to give either more of the height. Rows 3 and 5 share one `uniform` group, so their
+        heights are exactly in proportion to their weights; a drag only changes the weights."""
+        bar = tk.Canvas(b, bg=BG, highlightthickness=0, bd=0, height=P(10), cursor="sb_v_double_arrow")
+        bar.grid(row=4, column=0, columnspan=2, sticky="ew")
+        b.grid_rowconfigure(4, weight=0, minsize=P(10))
+
+        def grip(hot=False):
+            bar.delete("all")
+            w = bar.winfo_width()
+            if w > 1:
+                gw = P(44)
+                sh.smooth_rect(bar, (w - gw) / 2, P(3), (w + gw) / 2, P(7), P(2),
+                               self.accent if hot else "#334155", BG)
+        drag = {}
+
+        def press(e):
+            drag.update(y=e.y_root, top=self.split_heights()[0], total=sum(self.split_heights()),
+                        y0=bar.winfo_y() + bar.winfo_height() // 2)
+            drag["ghost"] = tk.Frame(b, bg=self.accent, height=max(2, P(2)))
+            drag["ghost"].place(x=P(12), y=drag["y0"], relwidth=1, width=-P(24))
+            grip(True)
+
+        def move(e):
+            if not drag:
+                return
+            lo, hi = P(self.SPLIT_MIN[0]), drag["total"] - P(self.SPLIT_MIN[1])
+            top = min(max(drag["top"] + e.y_root - drag["y"], lo), max(lo, hi))
+            drag["frac"] = top / max(1, drag["total"])
+            # while dragging only a guide line moves; the panels are laid out once, on release
+            # (re-laying them out per mouse move redraws every panel each time - seconds of lag)
+            drag["ghost"].place_configure(y=drag["y0"] + top - drag["top"])
+
+        def release(e):
+            if drag.get("ghost"):
+                drag["ghost"].destroy()
+            if "frac" in drag:
+                self.split_frac = drag["frac"]
+                self.split_rows()
+            drag.clear()
+            grip(bar.winfo_containing(e.x_root, e.y_root) is bar)
+        bar.bind("<Configure>", lambda e: grip())
+        bar.bind("<Enter>", lambda e: grip(True))
+        bar.bind("<Leave>", lambda e: drag or grip())
+        bar.bind("<ButtonPress-1>", press)
+        bar.bind("<B1-Motion>", move)
+        bar.bind("<ButtonRelease-1>", release)
+        bar.bind("<Double-Button-1>", lambda e: (setattr(self, "split_frac", 0.56), self.split_rows()))
+        self.split_rows()
+
+    def split_heights(self):
+        return self.body.grid_bbox(0, 3)[3], self.body.grid_bbox(0, 5)[3]
+
     def split_rows(self):
-        """How the window's height is shared between the middle and the bottom: the chart gets a little
-        more than the tables; the settings form gets most of it (the tables keep two rows)."""
-        if self.view == "settings":
-            self.body.grid_rowconfigure(3, weight=40, minsize=P(250))
-            self.body.grid_rowconfigure(4, weight=9, minsize=P(170))
-        else:
-            self.body.grid_rowconfigure(3, weight=20, minsize=P(250))
-            self.body.grid_rowconfigure(4, weight=17, minsize=P(180))
+        """Share the height between the middle (row 3) and bottom (row 5) panels by `split_frac`."""
+        top = max(1, int(round(self.split_frac * 1000)))
+        self.body.grid_rowconfigure(3, weight=top, minsize=0, uniform="split")
+        self.body.grid_rowconfigure(5, weight=max(1, 1000 - top), minsize=0, uniform="split")
 
     def build_top(self, b):
         wrap = tk.Frame(b, bg=TOPBG)
@@ -744,7 +797,7 @@ class Window:
     def build_center(self, b):
         box = sh.Box(b, PANEL, LINE, radius=P(12), inset=P(6))
         frame = box.inner
-        frame.grid(row=3, column=0, sticky="nsew", padx=(P(12), P(10)), pady=P(10))
+        frame.grid(row=3, column=0, sticky="nsew", padx=(P(12), P(10)), pady=(P(10), 0))
         bar = tk.Frame(frame, bg=PANEL)
         bar.pack(fill="x", padx=P(10), pady=(P(4), P(6)))
         tabs = [("chart", self.t("chart"), "chart"), ("settings", self.t("settings"), "sliders")]
@@ -791,7 +844,7 @@ class Window:
             self.watch_list = None
             return
         w = self.card(b)
-        w.grid(row=3, column=1, sticky="nsew", padx=(0, P(12)), pady=P(10))
+        w.grid(row=3, column=1, sticky="nsew", padx=(0, P(12)), pady=(P(10), 0))
         head = tk.Frame(w, bg=PANEL)
         head.pack(fill="x", padx=P(10), pady=(P(6), P(6)))
         self.label(head, self.t("watch"), 15, INK, "bold").pack(side="left")
@@ -810,7 +863,7 @@ class Window:
     def build_bottom(self, b):
         box = sh.Box(b, PANEL, LINE, radius=P(12), inset=P(6))
         left = box.inner
-        left.grid(row=4, column=0, sticky="nsew", padx=(P(12), P(10)), pady=(0, P(12)),
+        left.grid(row=5, column=0, sticky="nsew", padx=(P(12), P(10)), pady=(0, P(12)),
                   columnspan=1 if self.shown("log") else 2)
         bar = tk.Frame(left, bg=PANEL)
         bar.pack(fill="x", padx=P(4), pady=(P(2), 0))
@@ -844,7 +897,7 @@ class Window:
         self.set_tab("open")
         if self.shown("log"):
             right = self.card(b)
-            right.grid(row=4, column=1, sticky="nsew", padx=(0, P(12)), pady=(0, P(12)))
+            right.grid(row=5, column=1, sticky="nsew", padx=(0, P(12)), pady=(0, P(12)))
             self.label(right, self.t("log"), 15, INK, "bold").pack(anchor="w", padx=P(10), pady=(P(6), P(4)))
             self.log_txt = tk.Text(right, bg=PANEL, fg=SOFT, relief="flat", wrap="word", height=4, width=10, bd=0,
                                    font=self.f(13), highlightthickness=0, cursor="arrow", spacing1=P(3), spacing3=P(3),
