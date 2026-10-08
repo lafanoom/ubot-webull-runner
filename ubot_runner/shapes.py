@@ -109,8 +109,87 @@ def circle(cv, cx, cy, r, **kw):
     return cv.create_oval(cx - r, cy - r, cx + r, cy + r, **kw)
 
 
-def ring(cv, cx, cy, r, width, frac, color, track, tags=()):
-    """A progress ring: `frac` of the circle in `color`, the rest in `track`. Starts at 12 o'clock."""
+def diag_color(x, y, x1, y1, x2, y2, c0, c1, end=0.7, angle=160):
+    """The colour `diag_gradient` paints at (x, y) - so something drawn on top can blend into it."""
+    w, h = x2 - x1, y2 - y1
+    a = math.radians(angle)
+    sa, ca = math.sin(a), -math.cos(a)
+    length = abs(w * sa) + abs(h * ca) or 1.0
+    t = (x - (x1 + w / 2)) * sa / length + (y - (y1 + h / 2)) * ca / length + 0.5
+    return mix(c0, c1, t / end)
+
+
+def _rgb(c):
+    return [int(c[i:i + 2], 16) for i in (1, 3, 5)]
+
+
+_RING_CACHE = {}
+_SS = 4  # samples per pixel along each axis
+
+
+def ring_image(cv, r, width, frac, color, track, bg_at, ox, oy):
+    """A smooth (anti-aliased) progress ring as a PhotoImage - canvas arcs are drawn with hard,
+    stepped edges. Each pixel is sampled _SS x _SS times and blended into `bg_at(x, y)`, the
+    background colour at canvas point (x, y); (ox, oy) is where the image's top-left lands."""
+    half = width / 2
+    n = int(math.ceil(2 * (r + half))) + 2
+    c = n / 2
+    frac = max(0.0, min(1.0, frac or 0.0))
+    key = (n, r, width, round(frac, 3), color, track, bg_at(ox, oy), bg_at(ox + n, oy + n))
+    img = _RING_CACHE.get(key)
+    if img is not None:
+        return img
+    col, trk = _rgb(color), _rgb(track)
+    sweep = 2 * math.pi * frac
+    step = 1.0 / _SS
+    rows = []
+    for py in range(n):
+        row = []
+        for qx in range(n):
+            bg = bg_at(ox + qx, oy + py)
+            d0 = math.hypot(qx + 0.5 - c, py + 0.5 - c)
+            if abs(d0 - r) > half + 1:
+                row.append(bg)
+                continue
+            hit_c = hit_t = 0
+            for sy in range(_SS):
+                yy = py + (sy + 0.5) * step - c
+                for sx in range(_SS):
+                    xx = qx + (sx + 0.5) * step - c
+                    if abs(math.hypot(xx, yy) - r) > half:
+                        continue
+                    ang = math.atan2(xx, -yy) % (2 * math.pi)   # 0 at 12 o'clock, clockwise
+                    if ang < sweep:
+                        hit_c += 1
+                    else:
+                        hit_t += 1
+            tot = _SS * _SS
+            if not hit_c and not hit_t:
+                row.append(bg)
+                continue
+            b = _rgb(bg)
+            a_c, a_t = hit_c / tot, hit_t / tot
+            px_ = [round(b[i] * (1 - a_c - a_t) + col[i] * a_c + trk[i] * a_t) for i in range(3)]
+            row.append("#%02X%02X%02X" % tuple(px_))
+        rows.append("{" + " ".join(row) + "}")
+    img = tk.PhotoImage(master=cv, width=n, height=n)
+    img.put(" ".join(rows))
+    if len(_RING_CACHE) > 64:
+        _RING_CACHE.clear()
+    _RING_CACHE[key] = img
+    return img
+
+
+def ring(cv, cx, cy, r, width, frac, color, track, tags=(), bg_at=None):
+    """A progress ring: `frac` of the circle in `color`, the rest in `track`. Starts at 12 o'clock.
+    With `bg_at` (canvas x, y -> colour underneath) it is drawn anti-aliased as an image."""
+    if bg_at is not None:
+        half = width / 2
+        n = int(math.ceil(2 * (r + half))) + 2
+        ox, oy = int(round(cx - n / 2)), int(round(cy - n / 2))
+        img = ring_image(cv, r, width, frac, color, track, bg_at, ox, oy)
+        cv.create_image(ox, oy, image=img, anchor="nw", tags=tags)
+        return
     cv.create_oval(cx - r, cy - r, cx + r, cy + r, outline=track, width=width, tags=tags)
     if frac and frac > 0:
         ext = -max(1.0, min(359.9, 360 * frac))

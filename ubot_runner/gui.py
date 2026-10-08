@@ -703,7 +703,9 @@ class Window:
     def kpi_stats(self, cv, w, h, d):
         r = P(30)
         cx, cy = P(14) + r + P(4), h / 2
-        sh.ring(cv, cx, cy, r, P(4), d["share"], VIOLET, "#2A2F45", tags="fg")
+        tint = self.KPI_TINT["kpi_stats"][0]
+        sh.ring(cv, cx, cy, r, P(4), d["share"], VIOLET, "#2A2F45", tags="fg",
+                bg_at=lambda x, y: sh.diag_color(x, y, 0, 0, w, h, tint, PANEL, end=0.7))
         cv.create_text(cx, cy, text=d["ring"], fill=INK, font=self.mono(12, "bold"), tags="fg")
         x = cx + r + P(14)
         cv.create_text(x, P(22), text=d["title"], anchor="w", fill=INK3, font=self.f(11), tags="fg")
