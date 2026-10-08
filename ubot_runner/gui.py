@@ -1612,7 +1612,7 @@ class Window:
             pts.append((x1 + i * (x2 - x1) / (len(vals) - 1), y2 - (v - lo) / span * (y2 - y1)))
         if fill:
             self.fill_under(cv, pts, y2, color, PANEL, tags=tags)
-        cv.create_line(*[c for p in pts for c in p], fill=color, width=width, tags=tags)
+        sh.smooth_line(cv, pts, width, color, tags=tags)
 
     def fill_under(self, cv, pts, base, color, bg, step=2, strength=0.4, tags="fg"):
         """The fading fill under a line, from the line's colour at its highest point to the panel at
@@ -1758,9 +1758,13 @@ class Window:
         if not hasattr(self, "_chart") or not self.chart.winfo_exists():
             return
         cv = self.chart
-        cv.delete("all")
         bars, p = self._chart
         w, h = cv.winfo_width(), cv.winfo_height()
+        key = (repr(self._chart), w, h, self.lang)
+        if getattr(self, "_chart_drawn", None) == key:  # the smooth line is an image: only redraw on change
+            return
+        self._chart_drawn = key
+        cv.delete("all")
         if w < 50 or h < 50:
             return
         if len(bars) < 2:
@@ -1782,7 +1786,7 @@ class Window:
         for i, v in enumerate(vals):
             pts += [i * w / (len(vals) - 1), y(v)]
         self.fill_under(cv, list(zip(pts[0::2], pts[1::2])), base, color, PANEL, step=3, strength=0.35, tags="")
-        cv.create_line(*pts, fill=color, width=max(2, P(2.2)))
+        sh.smooth_line(cv, list(zip(pts[0::2], pts[1::2])), max(2, P(2.2)), color)
         if p:
             for v, c, dash in ((p["target"], UP, (6, 5)), (p["entry"], "#94A3B8", (2, 4)), (p["stop"], DOWN, (6, 5))):
                 if v:

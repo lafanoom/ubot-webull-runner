@@ -9,8 +9,11 @@ to the box, so code written for a plain Frame keeps working.
 Every pixel size here goes through `px()`, which scales with the screen's DPI
 once `set_scale()` has been told it (the window does that at start-up).
 """
+import base64
 import math
+import struct
 import tkinter as tk
+import zlib
 import tkinter.font as tkfont
 
 K = 1.0
@@ -306,6 +309,71 @@ def ring(cv, cx, cy, r, width, frac, color, track, tags=(), bg_at=None):
         ext = -max(1.0, min(359.9, 360 * frac))
         cv.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=ext, style="arc", outline=color,
                       width=width, tags=tags)
+
+
+def _png(w, h, rows):
+    """A minimal RGBA PNG (Tk 8.6 reads PNG and blends its alpha onto the canvas)."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    raw = b"".join(b"\x00" + bytes(r) for r in rows)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 1)) + chunk(b"IEND", b""))
+
+
+def smooth_line(cv, pts, width, color, tags=()):
+    """An anti-aliased polyline. Tk's own lines are drawn without anti-aliasing, so a chart line
+    looks stepped; this one is an image whose alpha is each pixel's coverage by the line (distance
+    from the pixel centre to the nearest segment), so it blends onto whatever is under it - grid,
+    fill, panel. Only the pixels near each segment are measured, so a chart line costs a few
+    tens of thousands of steps. Returns the image (the canvas keeps a reference too)."""
+    pts = [(float(x), float(y)) for x, y in pts]
+    if len(pts) < 2:
+        return None
+    hw = width / 2
+    r = hw + 1
+    x0 = int(math.floor(min(p[0] for p in pts) - r))
+    y0 = int(math.floor(min(p[1] for p in pts) - r))
+    W = int(math.ceil(max(p[0] for p in pts) + r)) - x0 + 1
+    H = int(math.ceil(max(p[1] for p in pts) + r)) - y0 + 1
+    alpha = bytearray(W * H)
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        dx, dy = bx - ax, by - ay
+        ll = dx * dx + dy * dy or 1e-9
+        for px in range(int(math.floor(min(ax, bx) - r)), int(math.ceil(max(ax, bx) + r)) + 1):
+            cx = px + 0.5
+            if dx:                          # the part of the segment within r of this column
+                ta = min(1.0, max(0.0, (cx - r - ax) / dx))
+                tb = min(1.0, max(0.0, (cx + r - ax) / dx))
+            else:
+                ta, tb = 0.0, 1.0
+            ya, yb = ay + dy * ta, ay + dy * tb
+            row_lo = int(math.floor(min(ya, yb) - r))
+            row_hi = int(math.ceil(max(ya, yb) + r))
+            ix = px - x0
+            for py in range(row_lo, row_hi + 1):
+                cy = py + 0.5
+                t = ((cx - ax) * dx + (cy - ay) * dy) / ll
+                t = 0.0 if t < 0 else 1.0 if t > 1 else t
+                ex, ey = ax + dx * t - cx, ay + dy * t - cy
+                cov = hw + 0.5 - math.sqrt(ex * ex + ey * ey)
+                if cov <= 0:
+                    continue
+                a = 255 if cov >= 1 else int(cov * 255)
+                k = (py - y0) * W + ix
+                if a > alpha[k]:
+                    alpha[k] = a
+    rgb = bytes(_rgb(color))
+    rows = []
+    for j in range(H):
+        row = bytearray(rgb + b"\x00") * W
+        row[3::4] = alpha[j * W:(j + 1) * W]
+        rows.append(row)
+    img = tk.PhotoImage(master=cv, data=base64.b64encode(_png(W, H, rows)))
+    cv.create_image(x0, y0, image=img, anchor="nw", tags=tags)
+    keep = cv.__dict__.setdefault("_smooth_imgs", [])   # Tk drops an image Python no longer holds
+    keep.append(img)
+    del keep[:-4]                           # older ones went with the redraw that replaced them
+    return img
 
 
 def draw_icon(cv, name, cx, cy, size, color, tags=(), width=None):
