@@ -115,6 +115,7 @@ class Strategy:
     TAG: str = "demo"            # ASCII tag of the factory job, goes into order ids
     BAR: str = "1d"
     INPUTS: dict = {}
+    CHOICES: dict = {}           # {text input: [allowed values]} - the window offers them as buttons
     WARMUP: int = 50             # closed bars needed before on_bar is called
     UI: dict = {}                # changes to the standard window (see ubot_runner.ui.check_ui)
     PLOT: list = []              # indicator lines on the chart (see ubot_runner.plot.check_plot)

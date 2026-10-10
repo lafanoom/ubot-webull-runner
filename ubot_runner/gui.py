@@ -1103,6 +1103,17 @@ class Window:
                     cell.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, P(14)), pady=(P(22), P(4)))
                     self.check(cell, k, var, command=self.touch).pack(anchor="w")
                     self.form["in:" + k] = var
+                elif isinstance(d, str) and self._choices(k):
+                    # a text input with a fixed list of values (strategy.CHOICES): pick, never type
+                    cell = tk.Frame(s, bg=PANEL)
+                    cell.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, P(14)), pady=(P(4), P(4)))
+                    self.label(cell, k, 12, INK2).pack(anchor="w", pady=(0, P(5)))
+                    opts = self._choices(k)
+                    seg = self.segmented(cell, [(x, x) for x in opts], str(v) if str(v) in opts else None, None,
+                                         height=36, size=13, padx=16)
+                    seg.command = lambda x, seg=seg: (seg.set(x), self.touch())
+                    seg.pack(anchor="w")
+                    self.form["in:" + k] = seg
                 else:
                     self.form["in:" + k] = self.field(s, k, f"{v:g}" if isinstance(v, float) else str(v), i // 3, i % 3)
             self.label(s, self.t("s_inputs_d"), 11, INK3, wraplength=P(700), justify="left").grid(
@@ -1208,6 +1219,14 @@ class Window:
                 else:
                     doc["inputs"][k[3:]] = w.get()
         return parse(doc, self.strategy.INPUTS)
+
+    def _choices(self, name):
+        """The values an input may take when the strategy lists them (2-8 short texts), else None."""
+        ch = (getattr(self.strategy, "CHOICES", None) or {}).get(name)
+        if isinstance(ch, (list, tuple)) and 2 <= len(ch) <= 8 and len(set(ch)) == len(ch) \
+                and all(isinstance(x, str) and 0 < len(x) <= 12 for x in ch):
+            return list(ch)
+        return None
 
     @staticmethod
     def _number(s, name):
