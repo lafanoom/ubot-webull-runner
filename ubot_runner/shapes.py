@@ -864,9 +864,27 @@ class Scrollable(tk.Frame):
         self.canvas.configure(yscrollcommand=self._scrolled)
         self.canvas.pack(side="left", fill="both", expand=True)
         self._shown = False
-        for w in (self.canvas, self.inner):
-            w.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._wheel), add="+")
-            w.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"), add="+")
+        self._left, self._job = 0.0, None
+        # pixels, so the wheel can move a little at a time
+        self.canvas.configure(yscrollincrement=1)
+        # The wheel is caught once per window, not per widget: Enter/Leave on the area fired
+        # Leave as soon as the pointer went onto a field inside it, and the wheel stopped there.
+        top = self.winfo_toplevel()
+        if not getattr(top, "_ubot_wheel", False):
+            top._ubot_wheel = True
+            top.bind("<MouseWheel>", Scrollable._route, add="+")
+
+    @staticmethod
+    def _route(e):
+        try:
+            w = e.widget.winfo_containing(e.x_root, e.y_root)
+        except (KeyError, tk.TclError):
+            return
+        while w is not None:
+            if isinstance(w, Scrollable):
+                w._wheel(e)
+                return
+            w = getattr(w, "master", None)
 
     def _fit(self, e=None):
         self.canvas.itemconfigure(self.win, width=self.canvas.winfo_width())
@@ -883,9 +901,29 @@ class Scrollable(tk.Frame):
             else:
                 self.sb.pack_forget()
 
+    WHEEL_PX = 60         # one notch of the wheel
+    WHEEL_MS = 12         # one frame of the glide
+
     def _wheel(self, e):
-        if self._shown:
-            self.canvas.yview_scroll(-1 * int(e.delta / 120), "units")
+        if not self._shown or not e.delta:
+            return
+        # touchpads send small deltas: they add up instead of rounding to nothing
+        self._left -= e.delta / 120 * self.WHEEL_PX
+        if self._job is None:
+            self._glide()
+
+    def _glide(self):
+        step = self._left * 0.35
+        step = int(step) if abs(step) >= 1 else (1 if self._left > 0 else -1)
+        if abs(self._left) < 1:
+            self._left, self._job = 0.0, None
+            return
+        before = self.canvas.yview()
+        self.canvas.yview_scroll(step, "units")
+        self._left -= step
+        if self.canvas.yview() == before:          # at the top or the bottom: stop
+            self._left = 0.0
+        self._job = self.after(self.WHEEL_MS, self._glide)
 
 
 def _lighter(hexcode, k=0.12):
