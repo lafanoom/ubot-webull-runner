@@ -194,6 +194,20 @@ class LiveChart(unittest.TestCase):
         lv.load_chart("F", OPEN_NOW, force=True)
         self.assertEqual(lv.chart["F"]["plots"][0]["label"], "EMA 9")
 
+    def test_a_failed_bar_load_keeps_the_chart_and_tries_again_soon(self):
+        lv, eng, sizes = self.live()
+        lv.load_chart("F", OPEN_NOW, force=True)
+        shown = list(lv.chart["F"]["bars"])
+        fb = eng.broker
+        fb.bars = lambda s, b, n: None                          # Webull answered with an error
+        later = OPEN_NOW + timedelta(seconds=120)
+        lv.load_chart("F", later)
+        self.assertEqual(lv.chart["F"]["bars"], shown)          # still on screen
+        wait = lv.CHART_EVERY.get(lv.chart_tf, 60)
+        self.assertAlmostEqual((later - lv.chart["F"]["at"]).total_seconds(), wait - lv.CHART_RETRY)
+        lv.load_chart("G", later, force=True)                   # nothing to keep: blank, soon again
+        self.assertEqual(lv.chart["G"]["bars"], [])
+
     def test_a_failing_plot_keeps_the_chart(self):
         class Boom(Plotting):
             def plot(self, ctx, symbol, bars):

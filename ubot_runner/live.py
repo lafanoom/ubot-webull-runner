@@ -191,6 +191,7 @@ class Live:
     # -- what the window reads -------------------------------------------------
     CHART_BARS = 120                      # bars on screen
     CHART_EVERY = {"1m": 30, "1d": 300, "1w": 600, "1mo": 600}   # seconds between reloads (default 60)
+    CHART_RETRY = 15                      # seconds before a failed chart load is tried again
 
     def load_chart(self, symbol, now, force=False):
         """The chart of one symbol at the chosen bar size, with the strategy's indicator lines
@@ -205,6 +206,15 @@ class Live:
         inputs = dict(self.eng.cfg.inputs)
         extra = warmup(self.plot, inputs)
         bars = self.eng.broker.bars(symbol, tf, self.CHART_BARS + extra) or []
+        if not bars:
+            # Webull now and then answers a bar request with an error (a 404 with no message, seen
+            # 10/10/2026): keep the chart on screen and ask again soon instead of a blank chart
+            again = now - timedelta(seconds=max(0, self.CHART_EVERY.get(tf, 60) - self.CHART_RETRY))
+            if c and c["tf"] == tf and c["bars"]:
+                c["at"] = again
+            else:
+                self.chart[symbol] = {"at": again, "tf": tf, "bars": [], "plots": [], "signals": []}
+            return
         shown = bars[-self.CHART_BARS:]
         cut = len(bars) - len(shown)
         lines = []
