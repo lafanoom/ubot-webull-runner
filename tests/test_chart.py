@@ -240,3 +240,32 @@ def iso_plus(t, seconds):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignalPlacement(unittest.TestCase):
+    """Strategy.signals() points land on the bar they fall in; bad ones are dropped."""
+
+    def test_place(self):
+        from ubot_runner.live import place_signals
+        times = [OPEN_NOW - timedelta(hours=4 - h) for h in range(4)]      # 4 hourly bars
+        now = OPEN_NOW
+        raw = [
+            {"time": times[1] + timedelta(minutes=20), "side": "buy", "note": "a"},
+            {"time": iso(times[2]), "side": "sell"},
+            {"time": times[2] + timedelta(minutes=5), "side": "buy", "note": "later on bar 2"},
+            {"time": times[0] - timedelta(hours=1), "side": "buy"},           # before the chart
+            {"time": now + timedelta(hours=1), "side": "buy"},                # in the future
+            {"time": times[3], "side": "hold"},                               # not a side
+            {"time": "not a time", "side": "buy"},
+            "junk",
+            {"time": times[3], "side": "sell", "note": "bad\nnote"},
+        ]
+        got = place_signals(raw, times, now)
+        self.assertEqual([(g["i"], g["side"]) for g in got], [(1, "buy"), (2, "buy"), (3, "sell")])
+        self.assertEqual(got[1]["note"], "later on bar 2")
+        self.assertEqual(got[2]["note"], "")
+        self.assertEqual(place_signals(None, times, now), [])
+        self.assertEqual(place_signals([], [], now), [])
+
+    def test_default_has_none(self):
+        self.assertEqual(sg.Strategy().signals(None, "X", None), [])

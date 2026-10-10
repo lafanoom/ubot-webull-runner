@@ -143,6 +143,12 @@ class Strategy:
         `bars` are the chart's bars, at the size the customer is looking at."""
         return {}
 
+    def signals(self, ctx, symbol: str, bars: Bars):
+        """Points in time the program's rules gave a signal, drawn on the chart as thin upright lines:
+        [{"time": datetime or ISO text, "side": "buy" | "sell", "note": short text}]. `bars` are the
+        chart's bars. The window draws them with the indicator lines; they place no order."""
+        return []
+
     def on_button(self, ctx, button: str):
         """A button declared in UI["buttons"] was pressed. Ask through ctx like on_bar."""
         pass

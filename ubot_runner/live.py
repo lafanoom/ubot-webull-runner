@@ -18,7 +18,7 @@ from . import clock
 from .broker import CHART_SIZES, DAILY_UP
 from .plot import plot_of, series, warmup
 from .state import iso
-from .strategy import Bars
+from .strategy import Bars, Strategy
 from .ui import ui_of
 
 log = logging.getLogger("ubot")
@@ -57,6 +57,7 @@ class Live:
         self.poll = poll_seconds
         self.ui = ui_of(engine.strategy)
         self.plot = plot_of(engine.strategy)
+        self.has_signals = type(engine.strategy).signals is not Strategy.signals
         bar = getattr(engine.strategy, "BAR", "1d")
         self.chart_tf = bar if bar in CHART_SIZES else "1d"
 
@@ -221,8 +222,15 @@ class Live:
                                       "group": n, "kind": item["kind"]})
                 except Exception:
                     log.exception("could not work out %s for the chart", item.get("kind"))
+        sigs = []
+        if self.has_signals and shown:
+            try:
+                sigs = place_signals(self.eng.strategy.signals(self.eng.ctx, symbol, Bars(shown)),
+                                     [b.time for b in shown], now)
+            except Exception:
+                log.exception("the program's signals() failed for %s", symbol)
         self.chart[symbol] = {"at": now, "tf": tf, "bars": [(iso(b.time), b.close) for b in shown],
-                              "plots": lines}
+                              "plots": lines, "signals": sigs}
 
     def chart_marks(self, symbol, now):
         """Where this program bought and sold the symbol, on the shown bars: each mark sits on the
@@ -346,9 +354,45 @@ class Live:
             "chart": self.chart.get(self.selected, {}).get("bars", []),
             "chart_tf": self.chart.get(self.selected, {}).get("tf", self.chart_tf),
             "plots": self.chart.get(self.selected, {}).get("plots", []),
-            "has_plot": bool(self.plot),
+            "has_plot": bool(self.plot) or self.has_signals,
+            "signals": self.chart.get(self.selected, {}).get("signals", []),
             "marks": self.chart_marks(self.selected, now),
             "values": values, "log": list(self.ring.lines)[-120:], "status": eng.status,
         }
         with self.lock:
             self._snap = snap
+
+
+MAX_SIGNALS = 300
+
+
+def place_signals(raw, times, now):
+    """The program's signals on the shown bars: each sits on the bar it falls in (the last bar that
+    started at or before it). Anything malformed, before the first bar or after now is left out;
+    two on one bar keep the later one."""
+    if not isinstance(raw, (list, tuple)) or not times:
+        return []
+    out = {}
+    for s in list(raw)[-MAX_SIGNALS * 4:]:
+        if not isinstance(s, dict) or s.get("side") not in ("buy", "sell"):
+            continue
+        t = s.get("time")
+        try:
+            t = datetime.fromisoformat(t) if isinstance(t, str) else t
+        except ValueError:
+            continue
+        if not isinstance(t, datetime):
+            continue
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        if t < times[0] or t > now:
+            continue
+        i = len(times) - 1
+        while i > 0 and times[i] > t:
+            i -= 1
+        note = s.get("note")
+        note = note.strip()[:60] if isinstance(note, str) and not any(ord(c) < 32 for c in note) else ""
+        prev = out.get(i)
+        if prev is None or prev["t"] <= iso(t):
+            out[i] = {"i": i, "side": s["side"], "note": note, "t": iso(t)}
+    return [out[i] for i in sorted(out)][-MAX_SIGNALS:]

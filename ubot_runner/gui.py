@@ -1916,13 +1916,13 @@ class Window:
             cv.create_text(x, cy, text=t, anchor="w", fill=INK2, font=self.f(12))
             x += f12.measure(t) + P(14)
         self._chart = (s["chart"], p, s.get("plots", []), s.get("marks", []), s.get("chart_tf"),
-                       s.get("has_plot", False))
+                       s.get("has_plot", False), s.get("signals", []))
 
     def draw_chart(self):
         if not hasattr(self, "_chart") or not self.chart.winfo_exists():
             return
         cv = self.chart
-        bars, p, plots, marks, tf, has_plot = self._chart
+        bars, p, plots, marks, tf, has_plot, signals = self._chart
         w, h = cv.winfo_width(), cv.winfo_height()
         key = (repr(self._chart), w, h, self.lang, self.chart_ind, self.chart_marks)
         if getattr(self, "_chart_drawn", None) == key:  # the smooth lines are images: only redraw on change
@@ -1964,6 +1964,8 @@ class Window:
         y = lambda v: top + (hi - v) / (hi - lo) * (base - top)
         for i in range(1, 4):
             cv.create_line(0, top + i * (base - top) / 4, w, top + i * (base - top) / 4, fill="#1C2435")
+        if self.chart_ind:
+            self.draw_signals(cv, signals, X, top, base, w)
         color = UP if vals[-1] >= vals[0] else DOWN
         pts = [(X(i), y(v)) for i, v in enumerate(vals)]
         self.fill_under(cv, pts, base, color, PANEL, step=3, strength=0.35 if not on_price else 0.2, tags="")
@@ -2071,6 +2073,28 @@ class Window:
                 when = ""
             cv.create_polygon(pts, fill=c, outline=PANEL, width=1, tags=(tag,))
             cv.tag_bind(tag, "<Enter>", lambda e, t=f"{note} · {when}", x=x, y=yv: self.chart_tip(t, x, y, w))
+            cv.tag_bind(tag, "<Leave>", lambda e: self.chart.delete("tip"))
+
+    def draw_signals(self, cv, signals, X, top, base, w):
+        """The program's signals: a faint upright line through the price and a small triangle at the
+        top (pointing up for buy, down for sell), with its note on hover. Drawn under the price."""
+        s = P(5)
+        for k, m in enumerate(signals):
+            x = X(m["i"])
+            c = UP if m["side"] == "buy" else DOWN
+            cv.create_line(x, top + s * 2 + P(4), x, base, fill=sh.mix(PANEL, c, 0.35), dash=(3, 4))
+            if m["side"] == "buy":
+                pts = (x, top, x - s, top + s * 1.6, x + s, top + s * 1.6)
+            else:
+                pts = (x - s, top, x + s, top, x, top + s * 1.6)
+            tag = f"sig{k}"
+            cv.create_polygon(pts, fill=sh.mix(PANEL, c, 0.85), outline="", tags=(tag,))
+            try:
+                when = datetime.fromisoformat(m["t"]).astimezone().strftime("%d/%m %H:%M")
+            except (TypeError, ValueError):
+                when = ""
+            txt = " · ".join(v for v in (self.t("c_sig_" + m["side"]), m.get("note") or "", when) if v)
+            cv.tag_bind(tag, "<Enter>", lambda e, t=txt, x=x: self.chart_tip(t, x, top + s * 2, w))
             cv.tag_bind(tag, "<Leave>", lambda e: self.chart.delete("tip"))
 
     def chart_tip(self, txt, x, y, w):
