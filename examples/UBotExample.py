@@ -10,7 +10,7 @@ favour, the stop follows at trail_atr x ATR below the close (0 = off).
 """
 from ubot_runner.strategy import Strategy, atr, sma
 
-RUNNER = "0.3.0"
+RUNNER = "0.3.1"
 NAME = "Example Trend"
 
 

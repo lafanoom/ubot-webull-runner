@@ -32,7 +32,7 @@ from .config import ConfigError, parse
 from . import shapes as sh
 from .shapes import px as P
 from .tray import Tray
-from .ui import default_lang, text, ui_of, why
+from .ui import buy_shares, default_lang, text, ui_of, why
 
 BG, PANEL, PANEL2, LINE, ROWLINE, HEAD = "#0A0E16", "#111827", "#0B1019", "#1F2738", "#182033", "#0F1420"
 TOPBG = "#0F1522"
@@ -1046,8 +1046,10 @@ class Window:
               border=None, label_color=INK2, stretch=True):
         cell = tk.Frame(parent, bg=parent["bg"])
         cell.grid(row=row, column=col, sticky="ew", padx=(0, P(14)), pady=(P(4), P(4)))
-        self.label(cell, label, 12, label_color, wraplength=P(190), justify="left").pack(anchor="w", pady=(0, P(5)))
+        title = self.label(cell, label, 12, label_color, wraplength=P(190), justify="left")
+        title.pack(anchor="w", pady=(0, P(5)))
         e = self.entry(cell, value, width, size=size, height=height, prefix=prefix, suffix=suffix, border=border)
+        e.title = title
         e.pack(anchor="w", fill="x" if stretch else None)
         e.bind("<KeyRelease>", lambda ev: self.touch())
         return e
@@ -1491,29 +1493,75 @@ class Window:
                              lambda v: (kind.set(v), seg.set(v)), height=36, padx=18)
         seg.pack(anchor="w")
         lim = self.field(grid, self.t("b_limit_p"), num(px) if px else "", 1, 1, size=16, height=44, label_color=INK3)
+        bf = tk.Frame(grid, bg=PANEL)
+        bf.grid(row=1, column=0, sticky="ew", pady=(P(4), P(4)))
+        self.label(bf, self.t("b_by"), 12, INK3).pack(anchor="w", pady=(0, P(5)))
+        by = tk.StringVar(value="shares")
+        held = {}                                     # the send button, once it exists
+
+        def price():
+            if kind.get() == "limit":
+                try:
+                    return float(lim.get())
+                except ValueError:
+                    return None
+            return px
+
+        def switch(v):
+            """Shares <-> dollars: the label changes, and what was typed is turned into the other unit."""
+            if v == by.get():
+                return
+            p = price()
+            try:
+                typed = float(qty.get())
+            except ValueError:
+                typed = None
+            qty.delete(0, "end")
+            if typed is not None and p:
+                qty.insert(0, f"{typed * p:.2f}" if v == "usd" else str(int(typed / p + 1e-9)))
+            by.set(v)
+            bseg.set(v)
+            qty.title.config(text=self.t("b_usd" if v == "usd" else "b_qty"))
+            update()
+        bseg = self.segmented(bf, [("shares", self.t("b_by_shares")), ("usd", self.t("b_by_usd"))], "shares",
+                              switch, height=36, padx=18)
+        bseg.pack(anchor="w")
         stop = self.field(grid, self.t("b_stop"), num(px * 0.95) if px else "", 2, 0, size=16, height=44,
                           label_color="#FDA4AF", border="#5B2333")
         target = self.field(grid, self.t("b_target"), "", 2, 1, size=16, height=44, label_color="#86EFAC", border="#1E4D33")
-        cost = self.label(d.inner, "", 13, INK3, mono=True)
+        cost = self.label(d.inner, "", 13, INK3)            # Thai in a mono font loses its leading vowels
         cost.pack(anchor="w", pady=(P(10), 0))
         self.label(d.inner, self.t("b_note"), 13, INK3, wraplength=P(500), justify="left").pack(anchor="w", pady=(P(4), 0))
         msg = self.label(d.inner, "", 13, DOWN2, wraplength=P(500), justify="left")
         msg.pack(anchor="w")
 
         def values():
-            q = int(float(qty.get()))
             lp = float(lim.get()) if kind.get() == "limit" else None
+            q, why_not = buy_shares(by.get(), qty.get(), lp or px)
             sp = float(stop.get()) if stop.get().strip() else None
             tp = float(target.get()) if target.get().strip() else None
-            return q, sp, tp, lp
+            return q, why_not, sp, tp, lp
 
         def update(*_):
+            ok = False
             try:
-                q, _, _, lp = values()
-                cost.config(text=self.t("b_cost", c=money(q * (lp or px or 0))))
+                q, why_not, _, _, lp = values()
+                p = lp or px or 0
+                if why_not == "no_price":
+                    cost.config(text=self.t("b_no_price"))
+                elif why_not == "too_small":
+                    cost.config(text=self.t("b_too_small", p=money(p)))
+                elif by.get() == "usd":
+                    cost.config(text=self.t("b_got", n=q, c=money(q * p)))
+                    ok = True
+                else:
+                    cost.config(text=self.t("b_cost", c=money(q * p)))
+                    ok = q >= 1
             except ValueError:
                 cost.config(text="")
             lim.config(state="normal" if kind.get() == "limit" else "disabled")
+            if "go" in held and not held.get("sending"):
+                held["go"].config(state="normal" if ok else "disabled")
         for w in (qty, lim):
             w.bind("<KeyRelease>", update)
         kind.trace_add("write", update)
@@ -1521,19 +1569,26 @@ class Window:
 
         def send():
             try:
-                q, sp, tp, lp = values()
+                q, why_not, sp, tp, lp = values()
             except ValueError:
                 msg.config(text=self.t("b_bad", e="?"))
                 return
+            if why_not or not q or q < 1:
+                return
+            held["sending"] = True
             go.config(state="disabled")
 
             def work():
                 out = self.live.ask("buy", symbol, q, sp, tp, lp, wait=True, timeout=120)
+                held["sending"] = False
                 self.inbox.put(("bought", out, d, msg, go))
             threading.Thread(target=work, daemon=True).start()
 
         go = self.button(d.btns, self.t("b_send"), send, "buy", 15, height=44, padx=22, radius=10)
         go.pack(side="right")
+        held["go"] = go
+        update()
+        d.buy_by, d.buy_qty, d.buy_update = switch, qty, update     # for tools/window_demo.py
         self.button(d.btns, self.t("cancel"), d.close, "ghost", 15, height=44, padx=20, radius=10).pack(
             side="right", padx=(0, P(10)))
         d.after(120, qty.focus_set)

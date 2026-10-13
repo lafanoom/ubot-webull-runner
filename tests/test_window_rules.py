@@ -359,5 +359,32 @@ class Controller(unittest.TestCase):
         self.assertEqual(eng.cfg.app_key, "x" * 20)
 
 
+class BuyByDollars(unittest.TestCase):
+    """runner 0.3.1: the buy-by-hand form takes dollars and turns them into whole shares."""
+
+    def test_shares_are_what_was_typed(self):
+        from ubot_runner.ui import buy_shares
+        self.assertEqual(buy_shares("shares", "7", 45.88), (7, None))
+        self.assertEqual(buy_shares("shares", "3", None), (3, None))
+
+    def test_dollars_round_down_and_never_spend_more(self):
+        from ubot_runner.ui import buy_shares
+        self.assertEqual(buy_shares("usd", "500", 45.88), (10, None))
+        self.assertEqual(buy_shares("usd", "458.80", 45.88), (10, None))   # exactly ten, not nine
+        q, _ = buy_shares("usd", "1000", 33.33)
+        self.assertLessEqual(q * 33.33, 1000)
+
+    def test_too_little_or_no_price(self):
+        from ubot_runner.ui import buy_shares
+        self.assertEqual(buy_shares("usd", "20", 45.88), (None, "too_small"))
+        self.assertEqual(buy_shares("usd", "500", None), (None, "no_price"))
+        self.assertEqual(buy_shares("usd", "500", 0), (None, "no_price"))
+
+    def test_not_a_number_raises(self):
+        from ubot_runner.ui import buy_shares
+        with self.assertRaises(ValueError):
+            buy_shares("usd", "abc", 10.0)
+
+
 if __name__ == "__main__":
     unittest.main()
