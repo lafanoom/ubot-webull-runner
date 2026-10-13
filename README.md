@@ -77,6 +77,8 @@ The computer must stay on while you want it to trade.
 - **Right**: the watched tickers with prices and a **Buy** button. A buy by hand goes
   through every rule above and the same money limits, and is looked after like the
   program's own (its stop rests at Webull, its target is watched). It is marked "You".
+  Enter it as shares or as dollars: dollars become whole shares at the last price
+  (or the limit price), rounded down, so it never spends more than you typed.
 - **Bottom**: open and closed positions (select one and **Sell**), and what the
   program did.
 - **Close (✕)**: asks whether to keep running in the corner (an icon by the clock;

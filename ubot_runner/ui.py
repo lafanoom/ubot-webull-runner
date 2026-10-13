@@ -138,6 +138,9 @@ T = {
         "b_target": "Target (watched by the program)", "b_cost": "About {c}",
         "b_note": "Regular hours only · whole shares · the stop goes to Webull right after the fill · this position is marked \"You\" and is looked after like the program's own, inside the same money limits",
         "b_send": "Send buy order", "b_bad": "Not sent: {e}",
+        "b_by": "Enter as", "b_by_shares": "Shares", "b_by_usd": "Dollars", "b_usd": "Dollars to spend",
+        "b_got": "Buys {n} shares · about {c}", "b_too_small": "Not enough for one share (price {p})",
+        "b_no_price": "No price yet - enter shares instead",
         "lv_title": "Switch to live trading?",
         "lv_body": "From now on the program sends real orders to Webull account {a} with real money, within the conditions and money limits you set.",
         "lv_tick": "I understand the program will trade with real money and any loss is mine", "lv_no": "Not now", "lv_go": "Start live trading",
@@ -199,6 +202,9 @@ T = {
         "b_target": "Target (โปรแกรมเฝ้า)", "b_cost": "ใช้เงินประมาณ {c}",
         "b_note": "ซื้อได้เฉพาะเวลาตลาดปกติ · หุ้นเต็มจำนวน · Stop วางที่ Webull ทันทีหลังซื้อได้ · ไม้นี้ติดป้าย \"คุณ\" และรวมอยู่ในระบบเดียวกัน: โปรแกรมดูแล Stop/Target และนับในเพดานเงิน",
         "b_send": "ส่งคำสั่งซื้อ", "b_bad": "ยังไม่ได้ส่ง: {e}",
+        "b_by": "ใส่เป็น", "b_by_shares": "จำนวนหุ้น", "b_by_usd": "จำนวนเงิน", "b_usd": "จำนวนเงิน (USD)",
+        "b_got": "ได้ {n} หุ้น · ใช้เงินประมาณ {c}", "b_too_small": "เงินไม่พอซื้อ 1 หุ้น (ราคา {p})",
+        "b_no_price": "ยังไม่มีราคา - ใส่เป็นจำนวนหุ้นแทน",
         "lv_title": "เปลี่ยนเป็นเทรดจริง?",
         "lv_body": "ตั้งแต่นี้โปรแกรมส่งคำสั่งซื้อขายจริงไปที่บัญชี Webull {a} ด้วยเงินจริง ตามเงื่อนไขและเพดานเงินที่ตั้งไว้",
         "lv_tick": "ฉันเข้าใจว่าโปรแกรมจะเทรดด้วยเงินจริง และผลขาดทุนเป็นของฉัน", "lv_no": "ยังไม่เปลี่ยน", "lv_go": "เริ่มเทรดจริง",
@@ -221,6 +227,24 @@ WHY = {
     "th": {"target": "ถึง Target", "stop": "Stop ที่ Webull", "sold by you": "ขายด้วยมือ", "stop all": "หยุดทั้งหมด",
            "sold outside the program": "ขายในแอป Webull", "program": "หมดเงื่อนไข"},
 }
+
+
+def buy_shares(by, typed, price):
+    """Whole shares for the buy-by-hand form: (shares, None) or (None, reason).
+
+    by "shares": the typed number of shares. by "usd": the typed dollars over the
+    price (the limit price, or the last price), rounded down, so the buy never
+    spends more than was typed. reason: "no_price" | "too_small". A typed value
+    that is not a number raises ValueError, as the form always did."""
+    v = float(typed)
+    if by != "usd":
+        return int(v), None
+    if not price or price <= 0:
+        return None, "no_price"
+    q = int(v / price + 1e-9)
+    if q < 1:
+        return None, "too_small"
+    return q, None
 
 
 def text(lang, key, **kw):
