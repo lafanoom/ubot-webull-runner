@@ -10,12 +10,17 @@ price, or in a small pane under it - at whatever bar size the customer picks:
         {"kind": "bollinger", "period": 20, "mult": 2},
         {"kind": "rsi", "period": "rsi_len", "levels": [30, 70]},
         {"kind": "line", "label": "Stop line", "pane": "price"},   # values from plot()
+        {"kind": "band", "label": "Trend band"},                   # one colour per bar, from plot()
     ]
 
 A value that names an input follows the customer's settings: change "fast"
 from 20 to 30 and the line moves with it. `kind: "line"` draws what the
 strategy's own `plot(ctx, symbol, bars)` returns under that label - for an
-indicator that is not in the list below.
+indicator that is not in the list below. `kind: "band"` draws a strip of one
+colour per bar under the price, and arrows on the price: plot() returns under
+its label either a list of colour names (BAND_COLORS, None = no colour) or
+{"state": [colour names], "div": ["up" | "down" | None]} - an "up" arrow goes
+under the bar's low, a "down" arrow over its high, on the first bar of a run.
 
 `check_plot` is the only judge. The runner draws no indicator when it says no,
 and the factory refuses the strategy file for the same reasons.
@@ -32,7 +37,12 @@ KINDS = {
     "macd": ("lower", ("fast", "slow", "signal"), {"fast": 12, "slow": 26, "signal": 9}),
     "atr": ("lower", ("period",), {"period": 14}),
     "line": (None, (), {}),
+    "band": ("band", (), {}),
 }
+BAND_COLORS = ("red", "orange", "green", "blue", "even")
+BAND_ARROWS = ("up", "down")
+MAX_BANDS = 1
+BAND_WARMUP = 300
 PERIOD_ARGS = ("period", "fast", "slow", "signal")
 MAX_LINES = 6
 MAX_LOWER = 2
@@ -82,6 +92,8 @@ def check_plot(plot, inputs=None):
         out += [f"{where} has an unknown key {k!r}" for k in item if k not in allowed]
         if "label" in item and not _label(item["label"]):
             out.append(f"{where} label must be text of 1-16 characters")
+        if kind == "band" and not _label(item.get("label")):
+            out.append(f"{where} (band) needs a label: the name plot() returns its colours under")
         if kind == "line":
             if not _label(item.get("label")):
                 out.append(f"{where} (line) needs a label: the name plot() returns its values under")
@@ -108,6 +120,8 @@ def check_plot(plot, inputs=None):
         if pane == "lower":
             lower += 1
         labels.append(label_of(item, inputs))
+    if sum(1 for i in plot if isinstance(i, dict) and i.get("kind") == "band") > MAX_BANDS:
+        out.append(f"PLOT may have at most {MAX_BANDS} band")
     if lower > MAX_LOWER:
         out.append(f"PLOT may have at most {MAX_LOWER} indicators under the price (rsi, macd, atr, lower lines)")
     if len(set(labels)) != len(labels):
@@ -150,6 +164,9 @@ def warmup(plot, inputs):
         if item["kind"] == "macd" and len(vals) == 3:
             vals = [vals[1] + vals[2]]
         longest = max([longest] + [int(v) for v in vals])
+    if any(item["kind"] == "band" for item in plot):
+        longest = max(longest * 3 + 10, BAND_WARMUP)     # a band reads anchors a week or more back
+        return min(1000, longest)
     return min(1000, longest * 3 + 10) if longest else 0
 
 
@@ -258,9 +275,25 @@ def series(item, bars, inputs, custom=None):
         start = next((i for i, v in enumerate(m) if v is not None), len(m))
         sig = [None] * start + ema_series(m[start:], g)
         return [(label, pane, m, levels or [0]), (label + " sig", pane, sig, [])]
+    if kind == "band":
+        return [(label, pane, band_values((custom or {}).get(item["label"]), len(bars)), [])]
     # kind == "line": the strategy's own numbers, right-aligned with the bars
     vals = (custom or {}).get(item["label"])
     if not isinstance(vals, (list, tuple)):
         return []
     vals = [float(v) if _num(v) else None for v in list(vals)[-len(bars):]]
     return [(label, pane, [None] * (len(bars) - len(vals)) + vals, levels)]
+
+
+def band_values(got, n):
+    """[[colour or None, arrow or None]] per bar, right-aligned with the bars like a line;
+    anything that is not a known colour / arrow is None."""
+    if isinstance(got, dict):
+        state, div = got.get("state"), got.get("div")
+    else:
+        state, div = got, None
+    state = list(state)[-n:] if isinstance(state, (list, tuple)) else []
+    div = list(div)[-n:] if isinstance(div, (list, tuple)) else []
+    state = [None] * (n - len(state)) + [v if v in BAND_COLORS else None for v in state]
+    div = [None] * (n - len(div)) + [v if v in BAND_ARROWS else None for v in div]
+    return [[s, d] for s, d in zip(state, div)]

@@ -220,7 +220,7 @@ class Live:
         lines = []
         if self.plot and shown:
             custom = {}
-            if any(p["kind"] == "line" for p in self.plot):
+            if any(p["kind"] in ("line", "band") for p in self.plot):
                 try:
                     custom = self.eng.strategy.plot(self.eng.ctx, symbol, Bars(bars)) or {}
                 except Exception:
@@ -240,6 +240,7 @@ class Live:
             except Exception:
                 log.exception("the program's signals() failed for %s", symbol)
         self.chart[symbol] = {"at": now, "tf": tf, "bars": [(iso(b.time), b.close) for b in shown],
+                              "ohlc": [(b.open, b.high, b.low, b.close) for b in shown],
                               "plots": lines, "signals": sigs}
 
     def chart_marks(self, symbol, now):
@@ -362,6 +363,7 @@ class Live:
             "quotes": dict(self.quotes), "selected": self.selected,
             "sparks": {s: v[1] for s, v in self.sparks.items()},
             "chart": self.chart.get(self.selected, {}).get("bars", []),
+            "chart_ohlc": self.chart.get(self.selected, {}).get("ohlc", []),
             "chart_tf": self.chart.get(self.selected, {}).get("tf", self.chart_tf),
             "plots": self.chart.get(self.selected, {}).get("plots", []),
             "has_plot": bool(self.plot) or self.has_signals,

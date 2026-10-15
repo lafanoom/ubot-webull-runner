@@ -283,3 +283,68 @@ class SignalPlacement(unittest.TestCase):
 
     def test_default_has_none(self):
         self.assertEqual(sg.Strategy().signals(None, "X", None), [])
+
+
+class Banding(sg.Strategy):
+    """A band from plot(): a colour per bar and an arrow now and then (runner 0.3.2)."""
+    PLOT = [{"kind": "band", "label": "Trend band"}]
+
+    def on_bar(self, ctx, symbol, bars):
+        pass
+
+    def plot(self, ctx, symbol, bars):
+        cols = ["green" if b.close >= b.open else "red" for b in bars]
+        return {"Trend band": {"state": cols, "div": ["up" if i % 50 == 0 else None for i in range(len(bars))]}}
+
+
+class Band(unittest.TestCase):
+    def test_check(self):
+        self.assertEqual(pl.check_plot([{"kind": "band", "label": "Trend band"}], {}), [])
+        self.assertTrue(pl.check_plot([{"kind": "band"}], {}))                       # needs a label
+        self.assertTrue(pl.check_plot([{"kind": "band", "label": "a"}, {"kind": "band", "label": "b"}], {}))
+        self.assertTrue(pl.check_plot([{"kind": "band", "label": "a", "pane": "price"}], {}))
+
+    def test_values_are_cleaned_and_right_aligned(self):
+        got = pl.band_values({"state": ["green", "purple", None, "blue"], "div": ["up", "sideways"]}, 6)
+        self.assertEqual(got, [[None, None], [None, None], ["green", None], [None, None], [None, "up"],
+                               ["blue", None]])
+        self.assertEqual(pl.band_values(["red", "even"], 3), [[None, None], ["red", None], ["even", None]])
+        self.assertEqual(pl.band_values(None, 2), [[None, None], [None, None]])
+        self.assertEqual(pl.band_values(["red"] * 9, 3), [["red", None]] * 3)
+
+    def test_warmup_reaches_back_for_the_anchors(self):
+        self.assertEqual(pl.warmup([{"kind": "band", "label": "x"}], {}), pl.BAND_WARMUP)
+        self.assertEqual(pl.warmup([], {}), 0)
+
+    def test_live_chart_carries_the_band_and_the_candles(self):
+        eng, st, fb = make()
+        eng.strategy = Banding()
+        eng.cfg.inputs = {}
+        fb.history["F"] = walk(500)
+        lv = Live(eng, "x.toml", lambda c, p: None, Ring())
+        lv.load_chart("F", OPEN_NOW, force=True)
+        c = lv.chart["F"]
+        self.assertEqual(len(c["ohlc"]), len(c["bars"]))
+        for (t, close), (o, h, l_, cl) in zip(c["bars"], c["ohlc"]):
+            self.assertEqual(close, cl)
+            self.assertTrue(l_ <= min(o, cl) and h >= max(o, cl))
+        band = [l for l in c["plots"] if l["pane"] == "band"]
+        self.assertEqual(len(band), 1)
+        self.assertEqual(len(band[0]["values"]), len(c["bars"]))
+        for (o, h, l_, cl), (colour, _) in zip(c["ohlc"], band[0]["values"]):
+            self.assertEqual(colour, "green" if cl >= o else "red")
+        lv.selected = "F"
+        lv.refresh(OPEN_NOW, quick=True)
+        self.assertEqual(lv.snapshot()["chart_ohlc"], lv.chart["F"]["ohlc"])
+
+
+class UIChart(unittest.TestCase):
+    def test_chart_and_manual(self):
+        from ubot_runner.ui import check_ui, T
+        self.assertEqual(check_ui({"chart": "candles", "manual": True}), [])
+        self.assertEqual(check_ui({"chart": "line", "manual": False}), [])
+        self.assertTrue(check_ui({"chart": "bars"}))
+        self.assertTrue(check_ui({"manual": "yes"}))
+        for lang in ("en", "th"):
+            for k in ("c_candles", "c_band_none", "w_watch"):
+                self.assertIn(k, T[lang])

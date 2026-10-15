@@ -41,6 +41,9 @@ UP, DOWN, UP2, DOWN2, AMBER, VIOLET = "#22C55E", "#F43F5E", "#4ADE80", "#FB7185"
 ACCENT, ACCENT2 = "#22D3EE", "#67E8F9"
 # indicator lines: never green or red (those mean money on this screen)
 LINE_COLORS = ("#F59E0B", "#C084FC", "#38BDF8", "#F472B6", "#E2E8F0", "#FDE68A")
+# a PLOT band's colours (plot.BAND_COLORS) and its arrows
+BAND = {"red": "#EF4444", "orange": "#F59E0B", "green": "#22C55E", "blue": "#7DD3FC", "even": "#334155"}
+BAND_ARROW = {"down": "#EF4444", "up": "#22C55E"}
 TF_LABEL = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "2h": "H2", "4h": "H4",
             "1d": "D1", "1w": "W1", "1mo": "MN"}
 GHOST_LINE, FIELD_LINE = "#3A4458", "#2A3448"
@@ -331,6 +334,8 @@ class Window:
         self.chart_tf = tf if tf in CHART_SIZES else bar if bar in CHART_SIZES else "1d"
         self.chart_ind = self.prefs.get("chart_ind") is not False
         self.chart_marks = self.prefs.get("chart_marks") is not False
+        c = self.prefs.get("chart_candles")
+        self.chart_candles = c if isinstance(c, bool) else ui_of(strategy).get("chart") == "candles"
         self.tab = "open"
         self.dirty = False
         self.form = {}
@@ -900,10 +905,12 @@ class Window:
         self.tf_seg.pack(side="left")
         self.marks_var = tk.BooleanVar(value=self.chart_marks)
         self.ind_var = tk.BooleanVar(value=self.chart_ind)
+        self.candles_var = tk.BooleanVar(value=self.chart_candles)
         self.check(tools, self.t("c_marks"), self.marks_var, self.toggle_chart, size=12).pack(side="right")
         self.check(tools, self.t("c_ind"), self.ind_var, self.toggle_chart, size=12).pack(side="right", padx=(0, P(14)))
+        self.check(tools, self.t("c_candles"), self.candles_var, self.toggle_chart, size=12).pack(side="right", padx=(0, P(14)))
         bar = getattr(self.strategy, "BAR", "")
-        if bar in TF_LABEL:
+        if bar in TF_LABEL and not self.ui.get("manual"):
             self.label(tools, self.t("c_sys_tf", tf=TF_LABEL[bar]), 11, INK4).pack(side="left", padx=(P(10), 0))
         self.chart = tk.Canvas(self.chart_frame, bg=PANEL, highlightthickness=0, height=P(120))
         self.chart.pack(fill="both", expand=True, padx=P(10), pady=(P(6), P(8)))
@@ -922,7 +929,8 @@ class Window:
 
     def toggle_chart(self):
         self.chart_ind, self.chart_marks = bool(self.ind_var.get()), bool(self.marks_var.get())
-        self.save_prefs(chart_ind=self.chart_ind, chart_marks=self.chart_marks)
+        self.chart_candles = bool(self.candles_var.get())
+        self.save_prefs(chart_ind=self.chart_ind, chart_marks=self.chart_marks, chart_candles=self.chart_candles)
         self.draw_chart()
 
     def set_view(self, view):
@@ -1923,7 +1931,8 @@ class Window:
                 r[k].config(bg=bg)
             r["bar"].config(bg=self.accent if sel else bg)
             r["buy"].config(background=bg)
-            r["state"].config(text=self.t("w_held") if sym in held else self.t("w_wait"))
+            r["state"].config(text=self.t("w_held") if sym in held else self.t("w_watch") if self.ui.get("manual")
+                              else self.t("w_wait"))
             r["px"].config(text=num(q[0]))
             up = q[1] is not None and q[1] >= 0
             r["chg"].config(text=("" if q[1] is None else f"{q[1]:+.2f}%"), background=bg,
@@ -1971,15 +1980,15 @@ class Window:
             cv.create_text(x, cy, text=t, anchor="w", fill=INK2, font=self.f(12))
             x += f12.measure(t) + P(14)
         self._chart = (s["chart"], p, s.get("plots", []), s.get("marks", []), s.get("chart_tf"),
-                       s.get("has_plot", False), s.get("signals", []))
+                       s.get("has_plot", False), s.get("signals", []), s.get("chart_ohlc", []))
 
     def draw_chart(self):
         if not hasattr(self, "_chart") or not self.chart.winfo_exists():
             return
         cv = self.chart
-        bars, p, plots, marks, tf, has_plot, signals = self._chart
+        bars, p, plots, marks, tf, has_plot, signals, ohlc = self._chart
         w, h = cv.winfo_width(), cv.winfo_height()
-        key = (repr(self._chart), w, h, self.lang, self.chart_ind, self.chart_marks)
+        key = (repr(self._chart), w, h, self.lang, self.chart_ind, self.chart_marks, self.chart_candles)
         if getattr(self, "_chart_drawn", None) == key:  # the smooth lines are images: only redraw on change
             return
         self._chart_drawn = key
@@ -1993,6 +2002,8 @@ class Window:
         X = lambda i: i * w / (n - 1)
         vals = [c for _, c in bars]
         lines = plots if self.chart_ind else []
+        candles = self.chart_candles and len(ohlc) == n
+        band = next((l for l in lines if l["pane"] == "band"), None)
         on_price = [l for l in lines if l["pane"] == "price"]
         groups = []                                      # the panes under the price, one per PLOT item
         for l in lines:
@@ -2004,8 +2015,9 @@ class Window:
         pane_h = max(P(56), (h - axis) * 0.22) if groups else 0
         if (h - axis) - pane_h * len(groups) < P(90):    # too short: the price comes first
             groups, pane_h = [], 0
-        base = h - axis - pane_h * len(groups)
-        lo, hi = min(vals), max(vals)
+        strip = P(10) if band else 0
+        base = h - axis - pane_h * len(groups) - (strip + P(8) if band else 0)
+        lo, hi = (min(o[2] for o in ohlc), max(o[1] for o in ohlc)) if candles else (min(vals), max(vals))
         for l in on_price:
             got = [v for v in l["values"] if v is not None]
             if got:
@@ -2021,10 +2033,15 @@ class Window:
             cv.create_line(0, top + i * (base - top) / 4, w, top + i * (base - top) / 4, fill="#1C2435")
         if self.chart_ind:
             self.draw_signals(cv, signals, X, top, base, w)
-        color = UP if vals[-1] >= vals[0] else DOWN
-        pts = [(X(i), y(v)) for i, v in enumerate(vals)]
-        self.fill_under(cv, pts, base, color, PANEL, step=3, strength=0.35 if not on_price else 0.2, tags="")
-        sh.smooth_line(cv, pts, max(2, P(2.2)), color)
+        if candles:
+            self.draw_candles(cv, ohlc, X, y, w / max(1, n - 1))
+        else:
+            color = UP if vals[-1] >= vals[0] else DOWN
+            pts = [(X(i), y(v)) for i, v in enumerate(vals)]
+            self.fill_under(cv, pts, base, color, PANEL, step=3, strength=0.35 if not on_price else 0.2, tags="")
+            sh.smooth_line(cv, pts, max(2, P(2.2)), color)
+        if band:
+            self.draw_band(cv, band, X, y, w / max(1, n - 1), base + P(5), strip, ohlc if len(ohlc) == n else None, vals)
         colors = {}
         for l in lines:
             colors.setdefault(l["group"], LINE_COLORS[len(colors) % len(LINE_COLORS)])
@@ -2088,6 +2105,46 @@ class Window:
             i = int(round((n - 1) * frac))
             anchor = "w" if frac == 0 else "e" if frac == 1 else "center"
             cv.create_text(X(i), h - P(8), text=times[i].strftime(fmt), anchor=anchor, fill=INK4, font=self.mono(11))
+
+    def draw_candles(self, cv, ohlc, X, Y, dx):
+        """One candle per bar: the wick from high to low, the body from open to close
+        (filled green when it closed at or above its open, red below)."""
+        half = max(1.0, min(P(6), dx * 0.34))
+        for i, (o, hi, lo, c) in enumerate(ohlc):
+            x = X(i)
+            color = UP if c >= o else DOWN
+            cv.create_line(x, Y(hi), x, Y(lo), fill=color, width=1)
+            y1, y2 = sorted((Y(o), Y(c)))
+            if y2 - y1 < 1:
+                y2 = y1 + 1
+            cv.create_rectangle(x - half, y1, x + half, y2, fill=color, outline=color)
+
+    def draw_band(self, cv, band, X, Y, dx, top, height, ohlc, closes):
+        """A PLOT band: one cell of colour per bar in a strip under the price, and its arrows on
+        the price - over the high for "down", under the low for "up" - on the first bar of a run."""
+        vals = band["values"]
+        if not any(v and v[0] for v in vals):
+            cv.create_text(P(2), top + height / 2, text=band["label"] + " · " + self.t("c_band_none"),
+                           anchor="w", fill=INK4, font=self.f(10))
+            return
+        for i, v in enumerate(vals):
+            c = BAND.get(v[0]) if v else None
+            if c:
+                cv.create_rectangle(X(i) - dx / 2, top, X(i) + dx / 2, top + height, fill=c, outline="")
+        s = P(5)
+        prev = None
+        for i, v in enumerate(vals):
+            a = v[1] if v else None
+            if a and a != prev:
+                x = X(i)
+                if a == "down":
+                    yv = Y(ohlc[i][1] if ohlc else closes[i]) - P(6)
+                    pts = (x - s, yv - s * 1.6, x + s, yv - s * 1.6, x, yv)
+                else:
+                    yv = Y(ohlc[i][2] if ohlc else closes[i]) + P(6)
+                    pts = (x, yv, x + s, yv + s * 1.6, x - s, yv + s * 1.6)
+                cv.create_polygon(pts, fill=BAND_ARROW[a], outline="")
+            prev = a
 
     def plot_line(self, cv, values, X, Y, color, thin=False):
         """One indicator line, in pieces where it has values (it starts once the indicator is ready)."""
