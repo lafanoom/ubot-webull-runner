@@ -43,14 +43,14 @@ UP, DOWN, UP2, DOWN2, AMBER, VIOLET = "#22C55E", "#F43F5E", "#4ADE80", "#FB7185"
 ACCENT, ACCENT2 = "#22D3EE", "#67E8F9"
 # indicator lines: never green or red (those mean money on this screen)
 def nice_ticks(lo, hi, k=5):
-    """Round prices for the scale between lo and hi: about k of them, steps of 1, 2, 2.5 or 5
+    """Round prices for the scale between lo and hi: as near k of them as the steps allow, 1, 2, 2.5 or 5
     times a power of ten."""
     import math
     if not hi > lo:
         return []
     raw = (hi - lo) / max(1, k)
     mag = 10 ** math.floor(math.log10(raw))
-    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    step = min((m * mag for m in (1, 2, 2.5, 5, 10)), key=lambda st: abs((hi - lo) / st - k))
     v = math.ceil(lo / step) * step
     out = []
     while v <= hi + step * 1e-9:
