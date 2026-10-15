@@ -42,6 +42,23 @@ INK, INK2, INK3, INK4, SOFT = "#E6EAF2", "#AEB7C7", "#8B95A7", "#5E6A80", "#C9D1
 UP, DOWN, UP2, DOWN2, AMBER, VIOLET = "#22C55E", "#F43F5E", "#4ADE80", "#FB7185", "#F59E0B", "#8B5CF6"
 ACCENT, ACCENT2 = "#22D3EE", "#67E8F9"
 # indicator lines: never green or red (those mean money on this screen)
+def nice_ticks(lo, hi, k=5):
+    """Round prices for the scale between lo and hi: about k of them, steps of 1, 2, 2.5 or 5
+    times a power of ten."""
+    import math
+    if not hi > lo:
+        return []
+    raw = (hi - lo) / max(1, k)
+    mag = 10 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    v = math.ceil(lo / step) * step
+    out = []
+    while v <= hi + step * 1e-9:
+        out.append(round(v, 10))
+        v += step
+    return out
+
+
 LEG = {"long": "#FBBF24", "short": "#F472B6"}   # the two sides of a program's rule, on the chart and its table
 LINE_COLORS = ("#F59E0B", "#C084FC", "#38BDF8", "#F472B6", "#E2E8F0", "#FDE68A")
 # a PLOT band's colours (plot.BAND_COLORS) and its arrows
@@ -960,6 +977,7 @@ class Window:
         self.draw_stats()
 
     # -- moving around the chart (chartview) ---------------------------------------------
+    CHART_ROOM = 3                 # empty bars between the newest bar and the price scale
     def _chart_n(self):
         return len(self._chart[0]) if hasattr(self, "_chart") else 0
 
@@ -974,8 +992,10 @@ class Window:
     def _chart_drag(self, e):
         if not self._drag:
             return
-        back = cview.drag(self._chart_n(), self._drag[1], self.chart_span, e.x - self._drag[0],
-                          self.chart.winfo_width())
+        n = self._chart_n()
+        span = cview.clamp(n, self._drag[1], self.chart_span)[1]
+        back = cview.drag(n, self._drag[1], span, e.x - self._drag[0],
+                          getattr(self, "_bar_dx", 0) * (span - 1))
         self.chart.configure(cursor="fleur")
         if back != self.chart_back:
             self.chart_back = back
@@ -988,9 +1008,11 @@ class Window:
     def _chart_wheel(self, e):
         n = self._chart_n()
         if n > 1 and e.delta:
-            w = max(1, self.chart.winfo_width())
+            span = cview.clamp(n, self.chart_back, self.chart_span)[1]
+            dx = getattr(self, "_bar_dx", 0) or 1
+            frac = (e.x / dx - 0.5) / max(1, span - 1)
             self.chart_back, self.chart_span = cview.zoom(n, self.chart_back, self.chart_span, e.delta / 120,
-                                                          min(1.0, max(0.0, e.x / w)))
+                                                          min(1.0, max(0.0, frac)))
             self.save_prefs(chart_span=self.chart_span)
             self._redraw_soon()
         return "break"
@@ -2088,8 +2110,13 @@ class Window:
             cv.create_text(w / 2, h / 2, text=self.t("no_bars"), fill=INK3, font=self.f(13))
             return
         n = len(bars)
-        X = lambda i: i * w / (n - 1)
         vals = [c for _, c in bars]
+        # the price scale on the right, and a little room after the newest bar before it
+        axis_w = max(P(58), F(self.mono(11)).measure(num(max(vals))) + P(18))
+        pw = w - axis_w
+        dx = pw / (n - 1 + self.CHART_ROOM + 0.5)
+        X = lambda i: dx * (i + 0.5)
+        self._bar_dx = dx
         lines = plots if self.chart_ind else []
         candles = self.chart_candles and len(ohlc) == n
         band = next((l for l in lines if l["pane"] == "band"), None)
@@ -2118,19 +2145,22 @@ class Window:
         lo, hi = lo - pad, hi + pad
         top = P(8)
         y = lambda v: top + (hi - v) / (hi - lo) * (base - top)
-        for i in range(1, 4):
-            cv.create_line(0, top + i * (base - top) / 4, w, top + i * (base - top) / 4, fill="#1C2435")
+        cv.create_line(pw, 0, pw, h - axis, fill=LINE)
+        for v in nice_ticks(lo, hi, max(2, int((base - top) / P(56)))):
+            if top + P(6) <= y(v) <= base - P(6):
+                cv.create_line(0, y(v), pw, y(v), fill="#1C2435")
+                cv.create_text(pw + P(6), y(v), text=num(v), anchor="w", fill=INK4, font=self.mono(11))
         if self.chart_ind:
             self.draw_signals(cv, [m for m in signals if not m.get("mark")], X, top, base, w)
         if candles:
-            self.draw_candles(cv, ohlc, X, y, w / max(1, n - 1))
+            self.draw_candles(cv, ohlc, X, y, dx)
         else:
             color = UP if vals[-1] >= vals[0] else DOWN
             pts = [(X(i), y(v)) for i, v in enumerate(vals)]
             self.fill_under(cv, pts, base, color, PANEL, step=3, strength=0.35 if not on_price else 0.2, tags="")
             sh.smooth_line(cv, pts, max(2, P(2.2)), color)
         if band:
-            self.draw_band(cv, band, X, y, w / max(1, n - 1), base + P(5), strip, ohlc if len(ohlc) == n else None, vals)
+            self.draw_band(cv, band, X, y, dx, base + P(5), strip, ohlc if len(ohlc) == n else None, vals)
         colors = {}
         for l in lines:
             colors.setdefault(l["group"], LINE_COLORS[len(colors) % len(LINE_COLORS)])
@@ -2141,7 +2171,7 @@ class Window:
         if p:
             for v, c, dash in ((p["target"], UP, (6, 5)), (p["entry"], "#94A3B8", (2, 4)), (p["stop"], DOWN, (6, 5))):
                 if v:
-                    cv.create_line(0, y(v), w, y(v), fill=c, dash=dash, width=1)
+                    cv.create_line(0, y(v), pw, y(v), fill=c, dash=dash, width=1)
         # the names of the lines on the price, top left, with their last value
         x = P(4)
         if self.chart_ind and not has_plot:
@@ -2158,11 +2188,19 @@ class Window:
             x += F(self.mono(11)).measure(t) + P(14)
         if self.chart_marks:
             self.draw_marks(cv, marks, X, y, w)
+        # the newest close on the scale (the last shown bar's, when looking back in time)
+        last = vals[-1]
+        up_bar = (ohlc[-1][3] >= ohlc[-1][0]) if candles else last >= vals[0]
+        tc = UP if up_bar else DOWN
+        cv.create_line(X(n - 1), y(last), pw, y(last), fill=tc, dash=(1, 3))
+        th = P(18)
+        cv.create_rectangle(pw + 1, y(last) - th / 2, w, y(last) + th / 2, fill=tc, outline="")
+        cv.create_text(pw + P(6), y(last), text=num(last), anchor="w", fill="#0B1019", font=self.mono(11, "bold"))
         # panes under the price
         for k, (g, ls) in enumerate(groups):
             y1 = base + k * pane_h + P(6)
             y2 = base + (k + 1) * pane_h - P(2)
-            cv.create_line(0, y1 - P(3), w, y1 - P(3), fill=LINE)
+            cv.create_line(0, y1 - P(3), pw, y1 - P(3), fill=LINE)
             got = [v for l in ls for v in l["values"] if v is not None] + list(ls[0]["levels"])
             if ls[0]["kind"] == "rsi":
                 plo, phi = 0.0, 100.0
@@ -2174,7 +2212,7 @@ class Window:
                 continue
             yy = lambda v, a=y1 + P(14), b=y2: a + (phi - v) / (phi - plo) * (b - a)
             for lv in ls[0]["levels"]:
-                cv.create_line(0, yy(lv), w, yy(lv), fill="#2A3448", dash=(3, 4))
+                cv.create_line(0, yy(lv), pw, yy(lv), fill="#2A3448", dash=(3, 4))
                 cv.create_text(w - P(2), yy(lv), text=num(lv), anchor="se", fill=INK4, font=self.mono(10))
             for j, l in enumerate(ls):
                 c = colors[g] if j == 0 else INK3
@@ -2199,7 +2237,7 @@ class Window:
         if back > 0:                                     # looking back in time: a way home
             t = "⇥  " + self.t("c_latest")
             tw, th = F(self.f(12)).measure(t) + P(18), P(24)
-            x2, y2 = w - P(4), base - P(6)
+            x2, y2 = pw - P(4), base - P(6)
             sh.round_rect(cv, x2 - tw, y2 - th, x2, y2, P(6), fill="#1E293B", outline=LINE)
             cv.create_text(x2 - tw / 2, y2 - th / 2, text=t, fill=INK, font=self.f(12))
             self._latest_box = (x2 - tw, y2 - th, x2, y2)

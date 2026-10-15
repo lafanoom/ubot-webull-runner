@@ -468,3 +468,13 @@ class RuleMarks(unittest.TestCase):
         from ubot_runner.ui import T
         for lang in ("en", "th"):
             self.assertIn("c_stats", T[lang])
+
+
+class PriceScale(unittest.TestCase):
+    def test_round_prices_inside_the_range(self):
+        from ubot_runner.gui import nice_ticks
+        self.assertEqual(nice_ticks(171.3, 192.8, 4), [175, 180, 185, 190])
+        self.assertEqual(nice_ticks(0.0, 1.0, 5), [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        self.assertEqual(nice_ticks(5, 5), [])
+        t = nice_ticks(4073.77, 4427.39, 5)
+        self.assertTrue(all(4073.77 <= v <= 4427.39 for v in t) and 3 <= len(t) <= 8, t)
