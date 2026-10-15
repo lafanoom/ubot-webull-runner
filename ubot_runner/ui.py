@@ -12,6 +12,8 @@ checks like every other order:
         "hide": ["chart", "kpi_stats"],          # panels to leave out (see PANELS)
         "values": ["RSI", "To target %"],        # extra columns in the watch list, from ui_values()
         "buttons": [{"id": "sell_all", "label": "Sell all"}],   # up to 4, call on_button()
+        "chart": "candles",                      # the chart starts as candles ("line" = the default)
+        "manual": True,                          # a program that never trades by itself: buys by hand only
     }
 
 `check_ui` is the only judge. The runner shows the standard window when it says
@@ -20,7 +22,7 @@ no, and the factory refuses the strategy file for the same reasons.
 import re
 
 PANELS = ("kpi_equity", "kpi_today", "kpi_stats", "kpi_used", "chart", "watch", "closed", "log")
-UI_KEYS = ("title", "lang", "accent", "hide", "values", "buttons")
+UI_KEYS = ("title", "lang", "accent", "hide", "values", "buttons", "chart", "manual")
 MAX_BUTTONS = 4
 MAX_VALUES = 3
 ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,19}$")
@@ -78,6 +80,10 @@ def check_ui(ui):
                 ids.append(x["id"])
         if not ok or len(set(ids)) != len(ids):
             out.append(f'UI buttons must be 1-{MAX_BUTTONS} items like {{"id": "sell_all", "label": "Sell all"}}')
+    if "chart" in ui and ui["chart"] not in ("candles", "line"):
+        out.append('UI chart must be "candles" or "line"')
+    if "manual" in ui and not isinstance(ui["manual"], bool):
+        out.append("UI manual must be true or false")
     return out
 
 
@@ -109,7 +115,8 @@ T = {
         "k_stats": "30-day results", "k_stats_d": "Won {w} / {n} · PF {pf}", "k_total": "Total {v}",
         "k_used": "Money the program uses", "k_held": "Holding {n} / {m}", "k_nocap": "no cap",
         "chart": "Chart", "settings": "Trading settings", "unsaved": "Unsaved changes",
-        "c_ind": "Indicators", "c_marks": "Trades", "c_sys_tf": "The program decides on {tf} bars",
+        "c_ind": "Indicators", "c_marks": "Trades", "c_candles": "Candles", "c_latest": "Latest", "c_stats": "Stats",
+        "c_band_none": "no colours at this bar size", "w_watch": "Watching", "c_sys_tf": "The program decides on {tf} bars",
         "c_no_ind": "This program draws no indicator lines", "c_sig_buy": "Buy signal", "c_sig_sell": "Sell signal", "c_mark_buy": "Bought {q} @ {p}",
         "c_mark_sell": "Sold {q} @ {p} · {pl} · {why}", "c_buy": "Bought", "c_stop": "Stop", "c_target": "Target", "no_bars": "No chart yet",
         "watch": "Stocks the program watches", "watch_tip": "Click for the chart", "buy": "Buy",
@@ -173,7 +180,8 @@ T = {
         "k_stats": "ผล 30 วัน", "k_stats_d": "ชนะ {w} / {n} ไม้ · PF {pf}", "k_total": "รวม {v}",
         "k_used": "เงินที่ให้โปรแกรมใช้", "k_held": "ถือ {n} / {m} ตัว", "k_nocap": "ไม่จำกัด",
         "chart": "กราฟ", "settings": "ตั้งค่าระบบเทรด", "unsaved": "มีค่าที่ยังไม่ได้บันทึก",
-        "c_ind": "Indicator", "c_marks": "จุดซื้อขาย", "c_sys_tf": "ระบบตัดสินใจจากแท่ง {tf}",
+        "c_ind": "Indicator", "c_marks": "จุดซื้อขาย", "c_candles": "แท่งเทียน", "c_latest": "ล่าสุด", "c_stats": "สถิติ",
+        "c_band_none": "ไม่มีสีที่ขนาดแท่งนี้", "w_watch": "ดูอยู่", "c_sys_tf": "ระบบตัดสินใจจากแท่ง {tf}",
         "c_no_ind": "โปรแกรมนี้ไม่มีเส้น indicator", "c_sig_buy": "สัญญาณซื้อ", "c_sig_sell": "สัญญาณขาย", "c_mark_buy": "ซื้อ {q} หุ้น @ {p}",
         "c_mark_sell": "ขาย {q} หุ้น @ {p} · {pl} · {why}", "c_buy": "ซื้อ", "c_stop": "Stop", "c_target": "Target", "no_bars": "ยังไม่มีกราฟ",
         "watch": "หุ้นที่โปรแกรมดูอยู่", "watch_tip": "กดเพื่อดูกราฟ", "buy": "ซื้อ",

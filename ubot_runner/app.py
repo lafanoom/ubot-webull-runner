@@ -134,7 +134,7 @@ def main(strategy_cls, program_path, argv=None):
     log.info("start %s (runner %s) host %s %s", name, RUNNER, cfg.host, "DRY RUN" if cfg.dry_run else "LIVE")
 
     from .broker import WebullBroker
-    token_dir = os.path.join(base, "webull-token")
+    token_dir = token_dir_of(base)
     os.makedirs(token_dir, exist_ok=True)
     if not cfg.is_uat:
         log.info("If Webull sends you an SMS code now, approve it in the Webull app within 5 minutes.")
@@ -171,6 +171,13 @@ def main(strategy_cls, program_path, argv=None):
         return run(cfg, broker, strategy, base, stem, log)
 
 
+def token_dir_of(base):
+    """Where Webull's login token lives: webull-token next to the program, or the folder
+    UBOT_WEBULL_TOKEN_DIR names - so a second program on the same keys shares the first
+    one's login instead of asking Webull for a new one (and a new SMS)."""
+    return os.environ.get("UBOT_WEBULL_TOKEN_DIR") or os.path.join(base, "webull-token")
+
+
 def version_of(stem):
     m = re.search(r"\bv\.?(\d+\.\d+)\s*$", stem)
     return "v" + m.group(1) if m else ""
@@ -201,7 +208,7 @@ def run_window(strategy, cfg_path, base, stem, name):
         setup_logging(log_path, cfg.secrets(), extra=[ring])
         log = logging.getLogger("ubot")
         log.info("start %s (runner %s) window", name, RUNNER)
-        token_dir = os.path.join(base, "webull-token")
+        token_dir = token_dir_of(base)
         os.makedirs(token_dir, exist_ok=True)
 
         def connect(c):

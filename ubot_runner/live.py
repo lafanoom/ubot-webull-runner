@@ -8,6 +8,7 @@ only reads `snapshot()`, a plain dict rebuilt after every step and command.
 import collections
 import copy
 import logging
+import math
 import os
 import queue
 import threading
@@ -58,6 +59,7 @@ class Live:
         self.ui = ui_of(engine.strategy)
         self.plot = plot_of(engine.strategy)
         self.has_signals = type(engine.strategy).signals is not Strategy.signals
+        self.has_stats = type(engine.strategy).stats is not Strategy.stats
         bar = getattr(engine.strategy, "BAR", "1d")
         self.chart_tf = bar if bar in CHART_SIZES else "1d"
 
@@ -189,7 +191,7 @@ class Live:
         return ""
 
     # -- what the window reads -------------------------------------------------
-    CHART_BARS = 120                      # bars on screen
+    CHART_BARS = 600                      # bars loaded; the window shows a slice (chartview) - drag back, wheel zoom
     CHART_EVERY = {"1m": 30, "1d": 300, "1w": 600, "1mo": 600}   # seconds between reloads (default 60)
     CHART_RETRY = 15                      # seconds before a failed chart load is tried again
 
@@ -220,7 +222,7 @@ class Live:
         lines = []
         if self.plot and shown:
             custom = {}
-            if any(p["kind"] == "line" for p in self.plot):
+            if any(p["kind"] in ("line", "band") for p in self.plot):
                 try:
                     custom = self.eng.strategy.plot(self.eng.ctx, symbol, Bars(bars)) or {}
                 except Exception:
@@ -239,8 +241,15 @@ class Live:
                                      [b.time for b in shown], now)
             except Exception:
                 log.exception("the program's signals() failed for %s", symbol)
+        stats = None
+        if self.has_stats and shown:
+            try:
+                stats = clean_stats(self.eng.strategy.stats(self.eng.ctx, symbol, Bars(shown)))
+            except Exception:
+                log.exception("the program's stats() failed for %s", symbol)
         self.chart[symbol] = {"at": now, "tf": tf, "bars": [(iso(b.time), b.close) for b in shown],
-                              "plots": lines, "signals": sigs}
+                              "ohlc": [(b.open, b.high, b.low, b.close) for b in shown],
+                              "plots": lines, "signals": sigs, "stats": stats}
 
     def chart_marks(self, symbol, now):
         """Where this program bought and sold the symbol, on the shown bars: each mark sits on the
@@ -362,10 +371,13 @@ class Live:
             "quotes": dict(self.quotes), "selected": self.selected,
             "sparks": {s: v[1] for s, v in self.sparks.items()},
             "chart": self.chart.get(self.selected, {}).get("bars", []),
+            "chart_ohlc": self.chart.get(self.selected, {}).get("ohlc", []),
             "chart_tf": self.chart.get(self.selected, {}).get("tf", self.chart_tf),
             "plots": self.chart.get(self.selected, {}).get("plots", []),
             "has_plot": bool(self.plot) or self.has_signals,
             "signals": self.chart.get(self.selected, {}).get("signals", []),
+            "stats": self.chart.get(self.selected, {}).get("stats"),
+            "has_stats": self.has_stats,
             "marks": self.chart_marks(self.selected, now),
             "values": values, "log": list(self.ring.lines)[-120:], "status": eng.status,
         }
@@ -402,7 +414,37 @@ def place_signals(raw, times, now):
             i -= 1
         note = s.get("note")
         note = note.strip()[:60] if isinstance(note, str) and not any(ord(c) < 32 for c in note) else ""
-        prev = out.get(i)
+        mark = s.get("mark") if s.get("mark") in ("entry", "exit") else None
+        leg = s.get("leg") if s.get("leg") in ("long", "short") else None
+        px = s.get("price")
+        px = float(px) if isinstance(px, (int, float)) and not isinstance(px, bool) and math.isfinite(px) and px > 0             else None
+        key = (i, mark, leg)
+        prev = out.get(key)
         if prev is None or prev["t"] <= iso(t):
-            out[i] = {"i": i, "side": s["side"], "note": note, "t": iso(t)}
-    return [out[i] for i in sorted(out)][-MAX_SIGNALS:]
+            out[key] = {"i": i, "side": s["side"], "note": note, "t": iso(t)}
+            if mark:
+                out[key].update(mark=mark, leg=leg, price=px)
+    return [out[k] for k in sorted(out, key=lambda k: (k[0], k[1] or "", k[2] or ""))][-MAX_SIGNALS:]
+
+
+STATS_ROWS, STATS_COLS, STATS_TEXT = 16, 4, 48
+
+
+def clean_stats(raw):
+    """A program's stats() table as the window may print it: text only, cut to size; None when
+    it is not a table."""
+    def text(v):
+        if v is None:
+            return ""
+        v = str(v) if isinstance(v, (str, int, float)) and not isinstance(v, bool) else ""
+        return "".join(c for c in v if ord(c) >= 32)[:STATS_TEXT]
+    if not isinstance(raw, dict) or not isinstance(raw.get("rows"), (list, tuple)):
+        return None
+    cols = [text(c) for c in list(raw.get("cols") or [])[:STATS_COLS]]
+    rows = [[text(c) for c in list(r)[:STATS_COLS]] for r in list(raw["rows"])[:STATS_ROWS]
+            if isinstance(r, (list, tuple))]
+    if not rows:
+        return None
+    tones = [t if t in ("long", "short") else None for t in list(raw.get("tones") or [])[:STATS_COLS]]
+    return {"title": text(raw.get("title")), "cols": cols, "rows": rows,
+            "note": "".join(c for c in str(raw.get("note") or "") if ord(c) >= 32)[:200], "tones": tones}
