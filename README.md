@@ -100,6 +100,13 @@ arrows on it. The chart can show the price as a line or as candles (a tick box; 
 `"chart": "candles"` starts it as candles), and `UI` `"manual": true` marks a program
 that never trades by itself - it is a window to buy and sell by hand.
 
+The chart loads 600 bars and shows 120: drag it sideways to go back in time, turn the
+wheel over it to zoom (the bar under the pointer stays put), and click "Latest" (or
+double-click) to come back to the newest bar. A `signals()` entry with `"mark":
+"entry"` or `"exit"` is drawn on the price - an arrow for an entry, a ring for an exit,
+coloured by `"leg"` (`long` / `short`) - and `stats()` can put a small text table under
+the chart (a "Stats" tick box hides it). Both only draw; neither places an order.
+
 Two programs on the same keys can share one Webull login: set `UBOT_WEBULL_TOKEN_DIR`
 to the first one's `webull-token` folder, so the second does not ask Webull for a new
 login (and a new SMS).

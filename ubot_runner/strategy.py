@@ -146,8 +146,20 @@ class Strategy:
     def signals(self, ctx, symbol: str, bars: Bars):
         """Points in time the program's rules gave a signal, drawn on the chart as thin upright lines:
         [{"time": datetime or ISO text, "side": "buy" | "sell", "note": short text}]. `bars` are the
-        chart's bars. The window draws them with the indicator lines; they place no order."""
+        chart's bars. The window draws them with the indicator lines; they place no order.
+
+        Optional keys draw it on the price instead: "mark": "entry" (an arrow under the bar's low
+        for buy, over its high for sell) or "exit" (a ring at "price", else the bar's close), and
+        "leg": "long" | "short" to colour the two sides of a rule apart. One bar can hold one
+        signal per (mark, leg) - an exit of one leg and the entry of the other on the same bar."""
         return []
+
+    def stats(self, ctx, symbol: str, bars: Bars):
+        """A small table under the chart, worked out over the chart's bars:
+        {"title": text, "cols": [header, ...], "rows": [[label, value, ...], ...], "note": text,
+         "tones": [None | "long" | "short", ...] per column}. Text only - the window prints it as
+        given. Return None for no table."""
+        return None
 
     def on_button(self, ctx, button: str):
         """A button declared in UI["buttons"] was pressed. Ask through ctx like on_bar."""

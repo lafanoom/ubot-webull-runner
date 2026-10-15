@@ -158,7 +158,7 @@ class LiveChart(unittest.TestCase):
         if strategy:
             eng.strategy = strategy
             eng.cfg.inputs = dict(strategy.INPUTS)
-        fb.history["F"] = walk(400)
+        fb.history["F"] = walk(1000)
         sizes = []
         real = fb.bars
         fb.bars = lambda s, b, n: (sizes.append((b, n)), real(s, b, n))[1]
@@ -229,7 +229,7 @@ class LiveChart(unittest.TestCase):
         st.db.commit()
         st.open_position("F", 5, 51.0, 49.0, 55.0, from_iso(times[-3]) + timedelta(seconds=30))
         m = lv.chart_marks("F", OPEN_NOW)
-        self.assertEqual([(x["side"], x["i"]) for x in m], [("buy", 10), ("sell", 20), ("buy", 117)])
+        self.assertEqual([(x["side"], x["i"]) for x in m], [("buy", 10), ("sell", 20), ("buy", len(times) - 3)])
         self.assertEqual((m[1]["from"], m[1]["pnl"], m[1]["reason"]), (10, 20, "target"))
 
     def test_a_trade_opened_before_the_chart_shows_only_its_sale(self):
@@ -348,3 +348,123 @@ class UIChart(unittest.TestCase):
         for lang in ("en", "th"):
             for k in ("c_candles", "c_band_none", "w_watch"):
                 self.assertIn(k, T[lang])
+
+
+class ChartView(unittest.TestCase):
+    """Drag back in time, wheel zoom, the way home (chartview)."""
+
+    def setUp(self):
+        from ubot_runner import chartview
+        self.cv = chartview
+
+    def test_window_starts_at_the_newest_bars(self):
+        self.assertEqual(self.cv.window(600, 0, 120), (480, 600))
+        self.assertEqual(self.cv.window(600, 30, 120), (450, 570))
+        self.assertEqual(self.cv.window(50, 0, 120), (0, 50))          # fewer bars than the span
+        self.assertEqual(self.cv.window(600, 10_000, 120), (0, 120))   # cannot go before the first bar
+        self.assertEqual(self.cv.clamp(600, -5, 1), (0, self.cv.SPAN_MIN))
+
+    def test_drag_right_goes_back_and_stops_at_both_ends(self):
+        # 120 bars over 1190 px = 10 px a bar
+        self.assertEqual(self.cv.drag(600, 0, 120, 100, 1190), 10)
+        self.assertEqual(self.cv.drag(600, 10, 120, -50, 1190), 5)
+        self.assertEqual(self.cv.drag(600, 0, 120, -500, 1190), 0)
+        self.assertEqual(self.cv.drag(600, 0, 120, 99_999, 1190), 480)
+        self.assertEqual(self.cv.drag(600, 7, 120, 0, 0), 7)
+
+    def test_zoom_keeps_the_bar_under_the_pointer(self):
+        back, span = self.cv.zoom(600, 0, 120, 1, 1.0)                 # at the right edge
+        self.assertEqual(back, 0)
+        self.assertLess(span, 120)
+        a, b = self.cv.window(600, 100, 120)
+        mid = a + 0.5 * 119
+        back2, span2 = self.cv.zoom(600, 100, 120, 1, 0.5)
+        a2, _ = self.cv.window(600, back2, span2)
+        self.assertLessEqual(abs(a2 + 0.5 * (span2 - 1) - mid), 1)
+        back3, span3 = self.cv.zoom(600, 0, 120, -50, 0.5)             # all the way out
+        self.assertEqual((back3, span3), (0, 600))
+        self.assertEqual(self.cv.zoom(600, 0, 20, 5, 0.5)[1], self.cv.SPAN_MIN)
+        self.assertEqual(self.cv.zoom(600, 0, 120, 0.01, 1.0)[1], 119)  # a touchpad nudge still moves
+
+    def test_new_bars_keep_the_same_bars_on_screen(self):
+        old = ["t1", "t2", "t3"]
+        self.assertEqual(self.cv.follow(old, ["t1", "t2", "t3", "t4", "t5"], 10), 12)
+        self.assertEqual(self.cv.follow(old, ["t2", "t3", "t4"], 10), 11)
+        self.assertEqual(self.cv.follow(old, old, 10), 10)
+        self.assertEqual(self.cv.follow(old, ["x", "y"], 10), 10)      # not found: leave it
+        self.assertEqual(self.cv.follow(old, ["t1", "t2", "t3", "t4"], 0), 0)   # at the newest: stays there
+
+    def test_cut_moves_marks_signals_and_lines(self):
+        n = 10
+        bars = [(f"t{i}", float(i)) for i in range(n)]
+        ohlc = [(i, i, i, i) for i in range(n)]
+        plots = [{"label": "x", "pane": "price", "values": list(range(n)), "levels": [], "group": 0, "kind": "ma"}]
+        marks = [{"side": "buy", "i": 2}, {"side": "sell", "i": 6, "from": 2}, {"side": "buy", "i": 9}]
+        sigs = [{"side": "buy", "i": 1}, {"side": "sell", "i": 5}]
+        chart = (bars, None, plots, marks, "5m", True, sigs, ohlc)
+        self.assertIs(self.cv.cut(chart, 0, n), chart)
+        b2, p, pl2, m2, tf, hp, s2, o2 = self.cv.cut(chart, 4, 8)
+        self.assertEqual([t for t, _ in b2], ["t4", "t5", "t6", "t7"])
+        self.assertEqual(o2, ohlc[4:8])
+        self.assertEqual(pl2[0]["values"], [4, 5, 6, 7])
+        self.assertEqual(plots[0]["values"], list(range(n)))              # the loaded chart is untouched
+        self.assertEqual(m2, [{"side": "sell", "i": 2, "from": -2}])       # its line runs in from the left
+        self.assertEqual(s2, [{"side": "sell", "i": 1}])
+
+    def test_live_loads_more_than_one_screen(self):
+        from ubot_runner import chartview
+        self.assertGreater(Live.CHART_BARS, chartview.SPAN * 2)
+        self.assertLessEqual(Live.CHART_BARS + pl.BAND_WARMUP, 1200)      # one Webull call, band warmed up
+        from ubot_runner.ui import T
+        for lang in ("en", "th"):
+            self.assertIn("c_latest", T[lang])
+
+
+class RuleMarks(unittest.TestCase):
+    """signals() with a mark: entries and exits on the price, a stats() table under the chart."""
+
+    def test_an_exit_and_an_entry_share_a_bar(self):
+        from ubot_runner.live import place_signals
+        times = [OPEN_NOW - timedelta(minutes=5 * (9 - i)) for i in range(10)]
+        raw = [{"time": times[3], "side": "sell", "mark": "exit", "leg": "long", "price": 51.5, "note": "out"},
+               {"time": times[3], "side": "sell", "mark": "entry", "leg": "short", "note": "in"},
+               {"time": times[3], "side": "buy", "note": "plain"},
+               {"time": times[5], "side": "buy", "mark": "wild", "leg": "up", "price": float("nan")}]
+        got = place_signals(raw, times, OPEN_NOW)
+        self.assertEqual([(g["i"], g.get("mark"), g.get("leg")) for g in got],
+                         [(3, None, None), (3, "entry", "short"), (3, "exit", "long"), (5, None, None)])
+        self.assertEqual(got[2]["price"], 51.5)
+        self.assertNotIn("price", got[3])                 # an unknown mark is a plain signal
+
+    def test_stats_are_text_cut_to_size(self):
+        from ubot_runner.live import STATS_ROWS, clean_stats
+        self.assertIsNone(clean_stats(None))
+        self.assertIsNone(clean_stats({"rows": []}))
+        t = clean_stats({"title": "T\x07", "cols": ["", "A", "B", "C", "D", "E"], "tones": ["long", "x"],
+                         "rows": [["n", 1, 2.5, True]] * 40, "note": "n" * 500})
+        self.assertEqual(t["title"], "T")
+        self.assertEqual(len(t["cols"]), 4)
+        self.assertEqual(t["tones"], ["long", None])
+        self.assertEqual(len(t["rows"]), STATS_ROWS)
+        self.assertEqual(t["rows"][0], ["n", "1", "2.5", ""])
+        self.assertEqual(len(t["note"]), 200)
+
+    def test_live_keeps_the_table_with_the_chart(self):
+        class Table(Plotting):
+            def stats(self, ctx, symbol, bars):
+                return {"title": "x", "rows": [["bars", len(bars)]]}
+        eng, st, fb = make()
+        eng.strategy = Table()
+        eng.cfg.inputs = dict(Table.INPUTS)
+        fb.history["F"] = walk(1000)
+        lv = Live(eng, "x.toml", lambda c, p: None, Ring())
+        lv.selected = "F"
+        lv.load_chart("F", OPEN_NOW, force=True)
+        self.assertEqual(lv.chart["F"]["stats"]["rows"], [["bars", str(lv.CHART_BARS)]])
+        lv.refresh(OPEN_NOW)
+        snap = lv.snapshot()
+        self.assertTrue(snap["has_stats"])
+        self.assertEqual(snap["stats"]["title"], "x")
+        from ubot_runner.ui import T
+        for lang in ("en", "th"):
+            self.assertIn("c_stats", T[lang])
